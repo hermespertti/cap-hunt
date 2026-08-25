@@ -23,43 +23,58 @@ ok('codex all undiscovered at start', codex.every(c => c.includes('undis')), JSO
 let sv = await page.evaluate(() => window.__cap.save());
 ok('save empty at start', sv.bestWeight === 0 && Object.values(sv.seen).every(v => !v));
 
-// 2. start, pick one, confirm a species got marked seen
+// 2. start, pick one — precise aimAt on the nearest shroom (aimAt is now synchronous)
 await page.click('#startBtn');
 await new Promise(r => setTimeout(r, 900));
-const pickedName = await page.evaluate(() => {
+const pickedOk = await page.evaluate(async () => {
   const cap = window.__cap;
-  for (let i = 0; i < 8; i++) {
+  let guard = 0;
+  while (guard++ < 60) {
     const n = cap.nearestShroom();
-    if (n && n.d < 2.3) { cap.aimAt(n.x, n.z); return cap.state().target; }
-    cap.keys('KeyW', true);
+    if (n && n.d < 2.3) {
+      cap.aimAt(n.x, n.z);
+      if (cap.state().target) {
+        cap.click();
+        await new Promise(r => setTimeout(r, 40));
+        if (cap.state().weight > 0) return true;
+      }
+    } else {
+      cap.keys('KeyW', true);
+      await new Promise(r => setTimeout(r, 100));
+      cap.keys('KeyW', false);
+    }
   }
-  return null;
+  return false;
 });
+ok('picked at least one cap', pickedOk);
 await new Promise(r => setTimeout(r, 200));
-await page.evaluate(() => window.__cap.click());
-await new Promise(r => setTimeout(r, 400));
 sv = await page.evaluate(() => window.__cap.save());
 const seenCount = Object.values(sv.seen).filter(Boolean).length;
 ok('pick marks a species seen', seenCount >= 1, `seen=${JSON.stringify(sv.seen)}`);
 const beforeReload = await page.evaluate(() => window.__cap.save());
 
-// 3. run to the end so bestWeight is written
-const end = await page.evaluate(async () => {
+// 3. run to the end — keep picking precisely so bestWeight is meaningful
+let end = await page.evaluate(async () => {
   const cap = window.__cap;
   let guard = 0;
   while (guard++ < 400) {
     if (cap.state().mode === 'end') return cap.state();
-    for (let i = 0; i < 24; i++) {
-      cap.aim((i * 15 * Math.PI) / 180, -0.45);
-      await new Promise(r => setTimeout(r, 12));
-      if (cap.state().target) { cap.click(); await new Promise(r => setTimeout(r, 40)); break; }
+    const n = cap.nearestShroom();
+    if (n && n.d < 2.3) {
+      cap.aimAt(n.x, n.z);
+      if (cap.state().target) { cap.click(); await new Promise(r => setTimeout(r, 40)); continue; }
     }
     cap.keys('KeyW', true);
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 90));
     cap.keys('KeyW', false);
   }
   return cap.state();
 });
+if (end.mode !== 'end') {
+  await page.evaluate(() => window.__cap.skipTime(500));
+  await new Promise(r => setTimeout(r, 600));
+  end = await page.evaluate(() => window.__cap.state());
+}
 sv = await page.evaluate(() => window.__cap.save());
 ok('bestWeight recorded at end', sv.bestWeight >= end.weight && sv.bestWeight > 0, `best=${sv.bestWeight} end.weight=${end.weight}`);
 

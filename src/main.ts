@@ -33,6 +33,7 @@ const G = {
   },
   aim: (yaw: number, pitch: number) => {
     player.yaw = yaw; player.pitch = pitch;
+    syncCameraAndTarget(); // synchronous — tests must not race the rAF raycast
   },
   aimAt: (x: number, z: number) => {
     const px = player.x, pz = player.z, eyeY = player.y + 1.5;
@@ -41,6 +42,7 @@ const G = {
     const hd = Math.max(0.2, Math.hypot(dx, dz));
     const dy = groundH(x, z) + 0.06 - eyeY;
     player.pitch = Math.max(-1.35, Math.min(1.35, Math.atan2(dy, hd)));
+    syncCameraAndTarget();
   },
   nearestShroom: () => {
     let best: THREE.Vector3 | null = null, bd = 1e9;
@@ -73,6 +75,7 @@ const G = {
   },
   mute: () => SFX.setMuted(!SFX.isMuted()),
   muted: () => SFX.isMuted(),
+  skipTime: (s: number) => { G.timeLeft = Math.max(0, G.timeLeft - s); },
   save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen } }),
   clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false } }; saveSave(); renderCodex(); },
   texDataUrl: () => (window as any).__capCamo.toDataURL('image/png'),
@@ -827,6 +830,18 @@ let targetShroom: THREE.Group | null = null;
 
 const raycaster = new THREE.Raycaster();
 raycaster.far = 2.7;
+
+// test/debug helper: apply the player pose to the camera immediately and recompute
+// the aim target in the same tick, so a test that aims then reads state() never
+// races the next requestAnimationFrame.
+function syncCameraAndTarget(): void {
+  camera.position.set(player.x, player.y + 1.5, player.z);
+  camera.rotation.set(0, 0, 0);
+  camera.rotateY(player.yaw);
+  camera.rotateX(player.pitch);
+  camera.updateMatrixWorld(); // setFromCamera reads matrixWorld — must not be one frame stale
+  updateTarget();
+}
 
 function updateTarget(): void {
   if (G.mode !== 'play') { targetShroom = null; targetRing.visible = false; G.targetName = ''; return; }
