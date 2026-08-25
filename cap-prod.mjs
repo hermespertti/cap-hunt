@@ -6,7 +6,7 @@ const browser = await puppeteer.launch({
   headless: 'new',
   executablePath: '/usr/bin/chromium',
   protocolTimeout: 360000,
-  args: ['--no-sandbox', '--enable-unsafe-swiftshader', '--use-gl=angle', '--window-size=1280,720'],
+  args: ['--no-sandbox', '--use-gl=angle', '--use-angle=vulkan', '--window-size=1280,720'],
 });
 const page = await browser.newPage();
 await page.setViewport({ width: 1280, height: 720 });

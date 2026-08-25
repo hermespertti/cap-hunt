@@ -1,6 +1,6 @@
 // cap-hunt field-notes + persistence test
 import puppeteer from 'puppeteer-core';
-const browser = await puppeteer.launch({ headless: 'new', executablePath: '/usr/bin/chromium', protocolTimeout: 360000, args: ['--no-sandbox', '--enable-unsafe-swiftshader', '--use-gl=angle'] });
+const browser = await puppeteer.launch({ headless: 'new', executablePath: '/usr/bin/chromium', protocolTimeout: 360000, args: ['--no-sandbox', '--use-gl=angle', '--use-angle=vulkan'] });
 const page = await browser.newPage();
 await page.setViewport({ width: 1280, height: 720 });
 const errors = [];

@@ -76,6 +76,31 @@ const G = {
   mute: () => SFX.setMuted(!SFX.isMuted()),
   muted: () => SFX.isMuted(),
   skipTime: (s: number) => { G.timeLeft = Math.max(0, G.timeLeft - s); },
+  info: () => {
+    const byKind: Record<string, number> = {};
+    for (const t of trees) byKind[t.kind] = (byKind[t.kind] ?? 0) + 1;
+    const bySp: Record<string, { x: number; z: number }[]> = {};
+    for (const g of shrooms) {
+      const sp = g.userData.sp as string;
+      (bySp[sp] ??= []).push({ x: g.position.x, z: g.position.z });
+    }
+    let mn = 1e9, mx = -1e9;
+    for (let x = -44; x <= 44; x += 4) for (let z = -44; z <= 44; z += 4) {
+      const h = groundH(x, z);
+      if (h < mn) mn = h; if (h > mx) mx = h;
+    }
+    return {
+      trees: { total: trees.length, byKind },
+      treeList: trees.map((t) => ({ x: t.x, z: t.z, kind: t.kind, r: t.r })),
+      shrooms: { total: shrooms.length, bySp },
+      elevation: { min: mn, max: mx, span: mx - mn, spawn: groundH(0, 22), north: groundH(0, -22) },
+    };
+  },
+  nearestTree: (x: number, z: number) => {
+    let bd = 1e9, kind = '';
+    for (const t of trees) { const d = Math.hypot(t.x - x, t.z - z); if (d < bd) { bd = d; kind = t.kind; } }
+    return { kind, d: bd };
+  },
   save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen } }),
   clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false } }; saveSave(); renderCodex(); },
   texDataUrl: () => (window as any).__capCamo.toDataURL('image/png'),
@@ -92,7 +117,7 @@ document.getElementById('app')!.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9fa8ad);
-scene.fog = new THREE.Fog(0x9fa8ad, 8, 34);
+scene.fog = new THREE.Fog(0x9fa8ad, 12, 56);
 
 const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.05, 100);
 
@@ -154,7 +179,7 @@ const groundTex = canvasTex(512, 512, (x, w, h) => {
   }
 });
 groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
-groundTex.repeat.set(10, 10);
+groundTex.repeat.set(14, 14);
 
 // weathered plank: silvery grey boards, grain, gaps, moss in seams
 const plankTex = canvasTex(512, 512, (x, w, h) => {
@@ -216,6 +241,46 @@ const barkTex = canvasTex(256, 512, (x, w, h) => {
   }
 });
 barkTex.wrapS = barkTex.wrapT = THREE.RepeatWrapping;
+
+// birch bark: white with dark horizontal lenticel dashes and charcoal scars
+const birchTex = canvasTex(256, 512, (x, w, h) => {
+  x.fillStyle = '#d8d4c8';
+  x.fillRect(0, 0, w, h);
+  for (let i = 0; i < 240; i++) {
+    x.strokeStyle = `rgba(${rnd(50, 80) | 0},${rnd(45, 70) | 0},${rnd(40, 60) | 0},${rnd(0.3, 0.85)})`;
+    x.lineWidth = rnd(1, 3);
+    const lx = rnd(0, w), ly = rnd(0, h), l = rnd(4, 22);
+    x.beginPath(); x.moveTo(lx, ly); x.lineTo(lx + l, ly + rnd(-2, 2)); x.stroke();
+  }
+  // dark vertical scars
+  for (let i = 0; i < 14; i++) {
+    x.fillStyle = `rgba(40,38,34,${rnd(0.25, 0.6)})`;
+    x.fillRect(rnd(0, w), rnd(0, h), rnd(1.5, 4), rnd(10, 46));
+  }
+  // faint vertical wash for tone variation
+  for (let i = 0; i < 10; i++) {
+    x.fillStyle = `rgba(150,145,130,${rnd(0.04, 0.1)})`;
+    x.fillRect(rnd(0, w), 0, rnd(10, 30), h);
+  }
+});
+birchTex.wrapS = birchTex.wrapT = THREE.RepeatWrapping;
+
+// aspen bark: pale grey-green with small dark eye scars
+const aspenTex = canvasTex(256, 512, (x, w, h) => {
+  x.fillStyle = '#a8ab98';
+  x.fillRect(0, 0, w, h);
+  for (let i = 0; i < 80; i++) {
+    x.strokeStyle = `rgba(${rnd(95, 120) | 0},${rnd(98, 122) | 0},${rnd(80, 100) | 0},${rnd(0.08, 0.3)})`;
+    x.lineWidth = rnd(1, 3);
+    const gx = rnd(0, w);
+    x.beginPath(); x.moveTo(gx, 0); x.lineTo(gx + rnd(-10, 10), h); x.stroke();
+  }
+  for (let i = 0; i < 90; i++) {
+    x.fillStyle = `rgba(55,58,50,${rnd(0.35, 0.8)})`;
+    x.beginPath(); x.ellipse(rnd(0, w), rnd(0, h), rnd(1.5, 4), rnd(1, 2.5), 0, 0, 7); x.fill();
+  }
+});
+aspenTex.wrapS = aspenTex.wrapT = THREE.RepeatWrapping;
 
 // chamois camo sleeve: cream / khaki / warm-brown organic blotches + tiger streaks + stipple
 const camoTex = canvasTex(512, 512, (x, w, h) => {
@@ -332,11 +397,16 @@ const skinTex = canvasTex(128, 128, (x, w, h) => {
 const world = new THREE.Group();
 scene.add(world);
 
-// ground with gentle undulation
-const groundH = (x: number, z: number): number =>
-  Math.sin(x * 0.35) * Math.cos(z * 0.3) * 0.07 + Math.sin(x * 0.11 + z * 0.13) * 0.05;
+// ground: rolling swell, gentle undulation, and a mossy ridge rising to the north
+const groundH = (x: number, z: number): number => {
+  const swell = 0.5 * Math.sin(x * 0.085 + 1.3) * Math.cos(z * 0.07 - 0.6);
+  const gentle = Math.sin(x * 0.35) * Math.cos(z * 0.3) * 0.07 + Math.sin(x * 0.11 + z * 0.13) * 0.05;
+  const ridge = 1.4 * Math.exp(-((z + 22) * (z + 22)) / 300) * (1 - 0.3 * Math.exp(-(x * x) / 160));
+  const flat = 1 - 0.65 * Math.exp(-((z - 22) * (z - 22)) / 40); // keep the spawn clearing flatter
+  return (ridge + swell + gentle) * flat;
+};
 {
-  const geo = new THREE.PlaneGeometry(64, 64, 64, 64);
+  const geo = new THREE.PlaneGeometry(96, 96, 96, 96);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
@@ -357,28 +427,29 @@ const groundH = (x: number, z: number): number =>
     g.addColorStop(1, 'rgba(95,135,55,0)');
     x.fillStyle = g; x.fillRect(0, 0, 128, 128);
   });
-  for (let i = 0; i < 16; i++) {
-    const s = rnd(0.5, 1.6);
+  for (let i = 0; i < 44; i++) {
+    const s = rnd(0.5, 1.8);
     const p = new THREE.Mesh(
       new THREE.PlaneGeometry(s, s),
       new THREE.MeshStandardMaterial({ map: mossTex, transparent: true, opacity: 0.55, roughness: 1, depthWrite: false }),
     );
     p.rotation.x = -Math.PI / 2;
-    p.position.set(rnd(-24, 24), groundH(rnd(-24, 24), 0) + rnd(0.01, 0.03), rnd(-24, 24));
+    const mx = rnd(-44, 44), mz = rnd(-44, 44);
+    p.position.set(mx, 0, mz);
     p.position.y = groundH(p.position.x, p.position.z) + rnd(0.012, 0.025);
     world.add(p);
   }
   const leafCols = ['#8a6a3c', '#9c7a44', '#b08d4e', '#6e7a3a', '#7a5a32'].map((c) => new THREE.Color(c));
   const leafGeo = new THREE.PlaneGeometry(0.07, 0.045);
   leafGeo.rotateX(-Math.PI / 2);
-  const im = new THREE.InstancedMesh(leafGeo, new THREE.MeshStandardMaterial({ roughness: 1 }), 1600);
+  const im = new THREE.InstancedMesh(leafGeo, new THREE.MeshStandardMaterial({ roughness: 1 }), 3400);
   const mtx = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const e = new THREE.Euler();
   const scl = new THREE.Vector3();
   const pv = new THREE.Vector3();
-  for (let i = 0; i < 1600; i++) {
-    const x = rnd(-25, 25), z = rnd(-25, 25);
+  for (let i = 0; i < 3400; i++) {
+    const x = rnd(-46, 46), z = rnd(-46, 46);
     e.set(0, rnd(0, 6.3), rnd(-0.2, 0.2));
     q.setFromEuler(e);
     pv.set(x, groundH(x, z) + rnd(0.01, 0.02), z);
@@ -394,34 +465,82 @@ const groundH = (x: number, z: number): number =>
 interface Ob { x: number; z: number; r: number; }
 const obstacles: Ob[] = [];
 
-// trees: trunks + canopy blobs
+// ---------- trees: five species, zone-aware, each a habitat ----------
+type TreeKind = 'oak' | 'pine' | 'birch' | 'aspen' | 'giant';
+interface TreeRec { x: number; z: number; kind: TreeKind; r: number; }
+const trees: TreeRec[] = [];
 {
-  const trunkMat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1 });
-  const canopyCols = [0x4a6741, 0x527046, 0x44603c, 0x5a7a4a];
-  const spots: [number, number][] = [];
-  for (let i = 0; i < 60; i++) {
-    const x = rnd(-24, 24), z = rnd(-24, 24);
-    if (Math.hypot(x, z - 22) < 3.2) continue; // spawn clear
-    if (Math.abs(x - 3.4) < 1.6) continue; // boardwalk corridor
-    spots.push([x, z]);
-  }
-  for (const [x, z] of spots) {
-    const h = rnd(4, 7), r = rnd(0.22, 0.42);
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.8, r, h, 8), trunkMat);
+  const oakMat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1 });
+  const birchMat = new THREE.MeshStandardMaterial({ map: birchTex, roughness: 0.9 });
+  const aspenMat = new THREE.MeshStandardMaterial({ map: aspenTex, roughness: 0.9 });
+  const pineMat = new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1, color: 0x9a8d7c });
+  const canopyCols: Record<TreeKind, number[]> = {
+    oak: [0x4a6741, 0x527046, 0x44603c, 0x5a7a4a],
+    birch: [0x7d9a52, 0x8aa85e, 0x6f8f48, 0x94ad66],
+    aspen: [0xa8b04e, 0xb4bc58, 0x98a348],
+    pine: [0x3d5a3a, 0x35502f, 0x46603c],
+    giant: [0x3f5a38, 0x46613e, 0x38522f],
+  };
+  const canopyMats = {} as Record<TreeKind, THREE.MeshStandardMaterial[]>;
+  (Object.keys(canopyCols) as TreeKind[]).forEach((k) => {
+    canopyMats[k] = canopyCols[k].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 1, flatShading: true }));
+  });
+  // zone bias: south clearing is open deciduous, the north ridge goes conifer,
+  // old-growth giants cluster on the ridge itself
+  const rollKind = (x: number, z: number): TreeKind => {
+    const north = Math.max(0, Math.min(1, (-z - 8) / 32));
+    const r = Math.random();
+    if (z < -14 && r < 0.16) return 'giant';
+    if (r < 0.2 + north * 0.32) return 'pine';
+    if (r < 0.48) return 'birch';
+    if (r < 0.66) return 'aspen';
+    return 'oak';
+  };
+  const placed: [number, number][] = [];
+  for (let i = 0; i < 160; i++) {
+    const x = rnd(-46, 46), z = rnd(-46, 46);
+    if (Math.hypot(x, z - 22) < 3.6) continue; // spawn clear
+    if (Math.abs(x - 3.4) < 1.8 && z < 27.5 && z > -8.5) continue; // boardwalk corridor
+    const kind = rollKind(x, z);
+    const minD = kind === 'giant' ? 3.4 : 2.6;
+    for (const p of placed) if (Math.hypot(p[0] - x, p[1] - z) < minD) { continue; }
+    placed.push([x, z]);
+    const conifer = kind === 'pine' || kind === 'giant';
+    const h = kind === 'giant' ? rnd(9, 12) : conifer ? rnd(6, 10) : rnd(5, 8);
+    const r = kind === 'giant' ? rnd(0.55, 0.8) : conifer ? rnd(0.16, 0.3) : rnd(0.24, 0.45);
+    const mat = kind === 'birch' ? birchMat : kind === 'aspen' ? aspenMat : conifer ? pineMat : oakMat;
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.75, r, h, 8), mat);
     trunk.position.set(x, h / 2 + groundH(x, z), z);
-    trunk.rotation.z = rnd(-0.04, 0.04);
+    trunk.rotation.z = rnd(-0.05, 0.05);
     world.add(trunk);
-    obstacles.push({ x, z, r: r + 0.3 });
-    const blobs = (Math.random() * 3) | 0 + 2;
-    for (let b = 0; b < blobs; b++) {
-      const br = rnd(1.4, 2.6);
-      const canopy = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(br, 1),
-        new THREE.MeshStandardMaterial({ color: canopyCols[(Math.random() * canopyCols.length) | 0], roughness: 1, flatShading: true }),
-      );
-      canopy.position.set(x + rnd(-1.2, 1.2), h + rnd(-0.5, 1.4), z + rnd(-1.2, 1.2));
-      canopy.scale.y = rnd(0.5, 0.75);
-      world.add(canopy);
+    obstacles.push({ x, z, r: r + 0.32 });
+    trees.push({ x, z, kind, r });
+    const by = groundH(x, z);
+    if (conifer) {
+      // conical crown: stacked tapering cones + a top spire
+      const tiers = kind === 'giant' ? 4 : 3;
+      for (let c = 0; c < tiers; c++) {
+        const cw = Math.max(0.7, r * (5.4 - c * 1.0) * rnd(0.92, 1.1));
+        const ch = h * (0.36 - c * 0.02);
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(cw, ch, 7),
+          canopyMats[kind][(c + i) % canopyMats[kind].length]);
+        cone.position.set(x + rnd(-0.15, 0.15), by + h * (0.52 + c * 0.155), z + rnd(-0.15, 0.15));
+        world.add(cone);
+      }
+      const top = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.1, 6), canopyMats[kind][0]);
+      top.position.set(x, by + h + 0.35, z);
+      world.add(top);
+    } else {
+      // rounded crown blobs (giants are conifers, so deciduous only here)
+      const blobs = 2 + ((Math.random() * 2) | 0);
+      for (let b = 0; b < blobs; b++) {
+        const br = rnd(1.4, 2.6);
+        const canopy = new THREE.Mesh(new THREE.IcosahedronGeometry(br, 1),
+          canopyMats[kind][(b + i) % canopyMats[kind].length]);
+        canopy.position.set(x + rnd(-1.2, 1.2), h + by + rnd(-0.5, 1.4), z + rnd(-1.2, 1.2));
+        canopy.scale.y = rnd(0.5, 0.75);
+        world.add(canopy);
+      }
     }
   }
 }
@@ -429,8 +548,8 @@ const obstacles: Ob[] = [];
 // rocks
 {
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x8b8b80, roughness: 1, flatShading: true });
-  for (let i = 0; i < 14; i++) {
-    const x = rnd(-22, 22), z = rnd(-22, 22);
+  for (let i = 0; i < 34; i++) {
+    const x = rnd(-44, 44), z = rnd(-44, 44);
     if (Math.hypot(x, z - 22) < 2.8) continue;
     const r = rnd(0.3, 0.85);
     const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), rockMat);
@@ -506,15 +625,15 @@ const onBoard = (x: number, z: number): boolean => Math.abs(x - BOARD_X) < 0.95 
 type Species = 'champ' | 'fly' | 'chant' | 'trump' | 'deadly' | 'gold';
 interface SpeciesDef {
   name: string; val: number; capR: number; capCol: string; stemCol: string;
-  bad?: boolean; gold?: boolean;
+  bad?: boolean; gold?: boolean; host: string;
 }
 const SPECIES: Record<Species, SpeciesDef> = {
-  champ: { name: 'Champignon', val: 5, capR: 0.1, capCol: '#b08968', stemCol: '#ddd2c0' },
-  fly: { name: 'Fly Agaric', val: 4, capR: 0.12, capCol: '#bf3a2b', stemCol: '#e6e0d6' },
-  chant: { name: 'Chanterelle', val: 4, capR: 0.085, capCol: '#e0b23c', stemCol: '#d3a83e' },
-  trump: { name: 'Black Trumpet', val: 8, capR: 0.1, capCol: '#453c33', stemCol: '#4a4038' },
-  deadly: { name: 'Deadly White', val: 8, capR: 0.11, capCol: '#e9e5dc', stemCol: '#ece8e0', bad: true },
-  gold: { name: 'The Golden Cap', val: 25, capR: 0.12, capCol: '#ffcf3d', stemCol: '#e8c86a', gold: true },
+  champ: { name: 'Champignon', val: 5, capR: 0.1, capCol: '#b08968', stemCol: '#ddd2c0', host: 'open ground' },
+  fly: { name: 'Fly Agaric', val: 4, capR: 0.12, capCol: '#bf3a2b', stemCol: '#e6e0d6', host: 'under birch & aspen' },
+  chant: { name: 'Chanterelle', val: 4, capR: 0.085, capCol: '#e0b23c', stemCol: '#d3a83e', host: 'under pine & giants' },
+  trump: { name: 'Black Trumpet', val: 8, capR: 0.1, capCol: '#453c33', stemCol: '#4a4038', host: 'under pine & birch' },
+  deadly: { name: 'Deadly White', val: 8, capR: 0.11, capCol: '#e9e5dc', stemCol: '#ece8e0', bad: true, host: 'under birch & aspen' },
+  gold: { name: 'The Golden Cap', val: 25, capR: 0.12, capCol: '#ffcf3d', stemCol: '#e8c86a', gold: true, host: 'in the shade of old growth' },
 };
 
 function capTexture(s: SpeciesDef, sp: Species): THREE.CanvasTexture | null {
@@ -643,17 +762,20 @@ function makeMushroom(sp: Species, x: number, y: number, z: number): THREE.Group
   return g;
 }
 
-// bushes: leafy card clusters with berries, along the central band
+// bushes: leafy card clusters with berries, scattered across the forest floor
 const bushSpots: { x: number; z: number }[] = [];
 {
-  // meandering band between log and boardwalk
-  for (let i = 0; i < 30; i++) {
-    const z = rnd(-24, 25);
-    const x = rnd(-5.5, 2.2) + Math.sin(z * 0.25) * 1.2;
-    if (Math.hypot(x, z - 22) < 1.6) continue;
+  // seeded thicket in the spawn corridor (the title dolly frames this)
+  for (const [sx, sz] of [[-3.2, 17.5], [-1.2, 13.2], [1.8, 15.6], [-4.0, 11.8]] as [number, number][]) {
+    bushSpots.push({ x: sx, z: sz });
+  }
+  for (let i = 0; i < 120 && bushSpots.length < 46; i++) {
+    const z = rnd(-45, 45);
+    const x = rnd(-45, 45);
+    if (Math.hypot(x, z - 22) < 1.8) continue;
     if (Math.abs(x - BOARD_X) < 1.4) continue;
     let ok = true;
-    for (const b of bushSpots) if (Math.hypot(b.x - x, b.z - z) < 2.4) ok = false;
+    for (const b of bushSpots) if (Math.hypot(b.x - x, b.z - z) < 2.6) { ok = false; break; }
     if (ok) bushSpots.push({ x, z });
   }
 }
@@ -691,35 +813,97 @@ for (const bs of bushSpots) {
   }
   bush.position.set(bs.x, baseY, bs.z);
   world.add(bush);
-  // mushrooms around this bush
-  const count = 2 + ((Math.random() * 3) | 0);
+  // litter around the bush: field mushrooms in the open ground (host-bound
+  // species grow strictly at their trees, so the bush floor stays field-only)
+  const count = 1 + ((Math.random() * 3) | 0);
   for (let i = 0; i < count; i++) {
-    let sp: Species;
-    const r = Math.random();
-    if (r < 0.38) sp = 'champ';
-    else if (r < 0.6) sp = 'fly';
-    else if (r < 0.76) sp = 'chant';
-    else if (r < 0.86) sp = 'trump';
-    else if (r < 0.95) sp = 'deadly';
-    else sp = 'gold';
     const ang = rnd(0, 6.3), rad = rnd(0.25, 1.1);
     const mx = bs.x + Math.cos(ang) * rad, mz = bs.z + Math.sin(ang) * rad;
-    world.add(makeMushroom(sp, mx, groundH(mx, mz), mz));
+    world.add(makeMushroom('champ', mx, groundH(mx, mz), mz));
   }
 }
-// guarantee 4 golden caps exist (swap the last champ of 4 bushes)
+
+// ---------- habitat-bound mushrooms: every species has its host trees ----------
+// field notes can hint where a cap likes to grow; the forest actually follows it
+const HOST_W: Record<TreeKind, [Species, number][]> = {
+  oak: [['champ', 6]],
+  birch: [['fly', 5], ['deadly', 3], ['trump', 2]],
+  aspen: [['fly', 5], ['deadly', 3]],
+  pine: [['chant', 6], ['trump', 2.5], ['champ', 1]],
+  giant: [['chant', 5], ['champ', 2]],
+};
+function pickHost(kind: TreeKind): Species {
+  const w = HOST_W[kind];
+  let tot = 0;
+  for (const [, n] of w) tot += n;
+  let r = Math.random() * tot;
+  for (const [sp, n] of w) { r -= n; if (r <= 0) return sp; }
+  return w[0][0];
+}
+for (const tr of trees) {
+  const roll = Math.random();
+  const clusters = roll < 0.15 ? 0 : roll < 0.4 ? 2 : 1;
+  for (let c = 0; c < clusters; c++) {
+    const sp = pickHost(tr.kind);
+    const n = 1 + ((Math.random() * 1.8) | 0); // 1..2 caps per cluster
+    for (let i = 0; i < n; i++) {
+      const ang = rnd(0, 6.3), rad = tr.r + rnd(0.25, 0.85); // close enough that the host is the nearest trunk
+      const mx = tr.x + Math.cos(ang) * rad, mz = tr.z + Math.sin(ang) * rad;
+      world.add(makeMushroom(sp, mx, groundH(mx, mz), mz));
+    }
+  }
+}
+// open-ground champignons in the grass, clear of every trunk
+for (let i = 0; i < 40; i++) {
+  const x = rnd(-45, 45), z = rnd(-45, 45);
+  let clear = true;
+  for (const t of trees) if (Math.hypot(t.x - x, t.z - z) < 2.2) { clear = false; break; }
+  if (clear) world.add(makeMushroom('champ', x, groundH(x, z), z));
+}
+// guarantee a discoverable population of every species (field notes wants them all)
 {
-  let golds = shrooms.filter((g) => g.userData.sp === 'gold').length;
-  for (const g of shrooms) {
-    if (golds >= 4) break;
-    if (g.userData.sp === 'champ') {
+  const plantAt = (sp: Species, x: number, z: number) => world.add(makeMushroom(sp, x, groundH(x, z), z));
+  const underKind = (kinds: TreeKind[]): [number, number] => {
+    const pool = trees.filter((t) => kinds.includes(t.kind));
+    const t = pool[(Math.random() * pool.length) | 0];
+    const ang = rnd(0, 6.3), rad = t.r + rnd(0.25, 0.85);
+    return [t.x + Math.cos(ang) * rad, t.z + Math.sin(ang) * rad];
+  };
+  const ensure = (sp: Species, min: number, kinds: TreeKind[]) => {
+    let have = 0;
+    for (const g of shrooms) if (g.userData.sp === sp) have++;
+    for (let i = have; i < min; i++) {
+      if (!kinds.length) plantAt(sp, rnd(-45, 45), rnd(-45, 45));
+      else { const [px, pz] = underKind(kinds); plantAt(sp, px, pz); }
+    }
+  };
+  ensure('champ', 10, []);
+  ensure('fly', 8, ['birch', 'aspen']);
+  ensure('chant', 8, ['pine', 'giant']);
+  ensure('trump', 6, ['pine', 'birch']);
+  ensure('deadly', 6, ['birch', 'aspen']);
+}
+// exactly four golden caps, tucked into the shade of the old growth
+{
+  const giants = trees.filter((t) => t.kind === 'giant');
+  let golds = 0;
+  for (const g of shrooms) if (g.userData.sp === 'gold') golds++;
+  if (golds < 4) {
+    for (const g of shrooms) {
+      if (golds >= 4) break;
+      if (g.userData.sp !== 'champ') continue;
       world.remove(g);
       const idx = pickMeshes.findIndex((m) => m.parent === g);
       if (idx >= 0) pickMeshes.splice(idx, 1);
       const ni = shrooms.indexOf(g);
       if (ni >= 0) shrooms.splice(ni, 1);
-      const ng = makeMushroom('gold', g.position.x, g.position.y, g.position.z);
-      world.add(ng);
+      let mx: number, mz: number;
+      if (giants.length) {
+        const host = giants[(Math.random() * giants.length) | 0];
+        const ang = rnd(0, 6.3), rad = host.r + rnd(0.3, 0.9);
+        mx = host.x + Math.cos(ang) * rad; mz = host.z + Math.sin(ang) * rad;
+      } else { mx = rnd(-38, 38); mz = rnd(-38, 38); }
+      world.add(makeMushroom('gold', mx, groundH(mx, mz), mz));
       golds++;
     }
   }
@@ -991,9 +1175,9 @@ function renderCodex(): void {
     const def = SPECIES[sp];
     if (saved.seen[sp]) {
       const cls = sp === 'gold' ? 'citem goldSeen' : 'citem';
-      return `<div class="${cls}">${sp === 'gold' ? '✦ ' : ''}${def.name}<b>+${def.val}g</b></div>`;
+      return `<div class="${cls}"><span>${sp === 'gold' ? '✦ ' : ''}${def.name}<b>+${def.val}g</b></span><i>${def.host}</i></div>`;
     }
-    return `<div class="citem undis">???</div>`;
+    return `<div class="citem undis"><span>???</span><i>${def.host}</i></div>`;
   }).join('');
   const bestEl = document.getElementById('titleBest');
   if (bestEl) bestEl.textContent = saved.bestWeight > 0 ? `BEST BASKET  ${saved.bestWeight}g` : '';
@@ -1150,8 +1334,8 @@ function updateMove(dt: number): void {
         nz = o.z + (dz / d) * min;
       }
     }
-    nx = Math.max(-25, Math.min(25, nx));
-    nz = Math.max(-25, Math.min(25, nz));
+    nx = Math.max(-46, Math.min(46, nx));
+    nz = Math.max(-46, Math.min(46, nz));
     // footsteps
     stepAcc += speed * dt;
     const stride = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 0.62 : 0.46;
