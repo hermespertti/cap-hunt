@@ -79,6 +79,25 @@ if (spot && tgt) {
 await page.evaluate(() => window.__cap.mute());
 ok('mute toggles', await page.evaluate(() => window.__cap.muted()) === true);
 
+// 6. v0.3 personal forest: the woods are persistent and re-rollable
+const snapWoods = () => page.evaluate(() =>
+  window.__cap.info().shrooms.map(s => `${s.x.toFixed(2)},${s.z.toFixed(2)},${s.t}`).sort().join('|'));
+const seedAt = () => page.evaluate(() => window.__cap.info().seed);
+ok('new woods button on title', (await page.$('#newWoodsBtn')) !== null);
+ok('seed hook present', Number.isInteger(await seedAt()));
+const woods1 = await snapWoods();
+const seed1 = await seedAt();
+await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+await new Promise(r => setTimeout(r, 3500));
+ok('reload keeps the same woods', (await snapWoods()) === woods1);
+ok('reload keeps the same seed', (await seedAt()) === seed1);
+const bestBefore = await page.evaluate(() => window.__cap.state().bestWeight);
+await page.evaluate(() => window.__cap.newWoods());
+await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+await new Promise(r => setTimeout(r, 3500));
+ok('new woods re-rolls the forest', (await snapWoods()) !== woods1);
+ok('new woods keeps the codex', (await page.evaluate(() => window.__cap.state().bestWeight)) === bestBefore);
+
 const pageErrs = errors.filter(e => !/favicon/i.test(e));
 ok('no page errors', pageErrs.length === 0, pageErrs.slice(0, 3).join(' | '));
 
