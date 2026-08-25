@@ -73,6 +73,8 @@ const G = {
   },
   mute: () => SFX.setMuted(!SFX.isMuted()),
   muted: () => SFX.isMuted(),
+  save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen } }),
+  clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false } }; saveSave(); renderCodex(); },
   texDataUrl: () => (window as any).__capCamo.toDataURL('image/png'),
 };
 
@@ -850,6 +852,23 @@ function updateTarget(): void {
   } else targetRing.visible = false;
 }
 
+// ---------- field notes + persistence ----------
+interface SaveData { bestWeight: number; seen: Record<Species, boolean>; }
+const SAVE_KEY = 'caphunt_save_v1';
+function loadSave(): SaveData {
+  const empty: SaveData = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false } };
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return empty;
+    const p = JSON.parse(raw) as Partial<SaveData>;
+    return { bestWeight: typeof p.bestWeight === 'number' ? p.bestWeight : 0, seen: { ...empty.seen, ...(p.seen ?? {}) } };
+  } catch { return empty; }
+}
+let saved = loadSave();
+function saveSave(): void {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(saved)); } catch { /* private mode */ }
+}
+
 // ---------- picking ----------
 const floatsEl = document.getElementById('floats')!;
 function floatText(txt: string, cls: string): void {
@@ -885,6 +904,12 @@ function doPickAction(): void {
   if (def.gold) { SFX.chime(3); floatText('✦ THE GOLDEN CAP  +25g', 'gold'); }
   else if (def.bad) floatText(`${def.name}  +${def.val}g (it's a bit slimy…)`, 'bad');
   else floatText(`${def.name}  +${def.val}g`, 'good');
+  if (!saved.seen[sp]) {
+    saved.seen[sp] = true;
+    saveSave();
+    floatText(`◆ new — ${def.name} added to your field notes`, 'gold');
+    if (def.gold) SFX.chime(5); else SFX.chime(1);
+  }
   updateHud();
   if (G.weight >= G.goal) endGame();
 }
@@ -918,6 +943,8 @@ function endGame(): void {
   document.body.classList.add('menu');
   if (document.pointerLockElement) document.exitPointerLock();
   const timeUsed = 150 - Math.max(0, G.timeLeft);
+  const newBest = G.weight > saved.bestWeight;
+  if (newBest) { saved.bestWeight = G.weight; saveSave(); }
   let rating: string;
   let sub: string;
   if (G.weight >= G.goal && G.badPicks === 0) { rating = 'FORAGER OF GODS'; sub = 'a full basket, not one slimy surprise. the forest bows.'; }
@@ -934,11 +961,29 @@ function endGame(): void {
     <div class="endStat"><div class="v">${Math.floor(timeUsed)}s</div><div class="l">time in the woods</div></div>
     <div class="endStat"><div class="v">${G.picks}</div><div class="l">caps picked</div></div>
     <div class="endStat"><div class="v">${G.badPicks}</div><div class="l">deadlies</div></div>
-    <div class="endStat"><div class="v">${G.goldenFound}/4</div><div class="l">golden caps</div></div>` +
+    <div class="endStat"><div class="v">${G.goldenFound}/4</div><div class="l">golden caps</div></div>
+    <div class="endStat"><div class="v">${saved.bestWeight}g</div><div class="l">${newBest ? '★ new best basket' : 'best basket'}</div></div>` +
     (rows ? `<div class="endStat basketRows">${rows}</div>` : '');
   endEl.style.display = 'flex';
   updateHud();
 }
+
+// ---------- title: field notes + best ----------
+function renderCodex(): void {
+  const el = document.getElementById('codex');
+  if (!el) return;
+  el.innerHTML = (Object.keys(SPECIES) as Species[]).map((sp) => {
+    const def = SPECIES[sp];
+    if (saved.seen[sp]) {
+      const cls = sp === 'gold' ? 'citem goldSeen' : 'citem';
+      return `<div class="${cls}">${sp === 'gold' ? '✦ ' : ''}${def.name}<b>+${def.val}g</b></div>`;
+    }
+    return `<div class="citem undis">???</div>`;
+  }).join('');
+  const bestEl = document.getElementById('titleBest');
+  if (bestEl) bestEl.textContent = saved.bestWeight > 0 ? `BEST BASKET  ${saved.bestWeight}g` : '';
+}
+renderCodex();
 
 function startGame(): void {
   if (G.started) return;

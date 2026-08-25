@@ -46,6 +46,14 @@
   .rule b{display:block;font-size:13px;color:#f4efe2;margin-bottom:3px;}
   .btn{margin-top:30px;pointer-events:auto;cursor:pointer;background:#a8d878;color:#1c2414;border:none;border-radius:14px;padding:15px 44px;font-size:18px;font-weight:900;letter-spacing:1px;box-shadow:0 8px 24px rgba(120,180,80,.35);transition:transform .12s;touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
   .btn:hover{transform:scale(1.05);}
+  .best{margin-top:18px;font-size:12px;letter-spacing:2px;font-weight:800;color:#ffd23f;text-shadow:0 2px 8px rgba(0,0,0,.5);}
+  .codexWrap{margin-top:14px;max-width:640px;width:92vw;}
+  .codexHead{font-size:10px;letter-spacing:4px;font-weight:800;color:#9ab87a;margin-bottom:6px;}
+  .codex{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;}
+  .citem{background:rgba(244,239,226,.07);border:1px solid rgba(244,239,226,.25);border-radius:9px;padding:4px 10px;font-size:11px;color:#f4efe2;font-weight:700;}
+  .citem b{color:#a8d878;font-weight:900;margin-left:6px;font-size:10px;}
+  .citem.undis{color:#6f6d60;border-style:dashed;border-color:rgba(244,239,226,.12);}
+  .citem.goldSeen{border-color:rgba(255,210,63,.5);color:#ffd23f;}
   .pauseBtn{position:fixed;top:100px;left:16px;width:44px;height:44px;border-radius:12px;background:rgba(24,28,20,.55);border:2px solid rgba(244,239,226,.5);color:#f4efe2;font-size:16px;font-weight:900;display:none;z-index:7;touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
   body.touch .pauseBtn{display:block;}
   body.menu .pauseBtn{display:none;}
@@ -97,6 +105,8 @@
     <div class="rule"><b>Find</b>Four golden caps are hidden in the thicket. Worth real grams.</div>
     <div class="rule"><b>Light</b>2:30 of daylight. After that the forest closes.</div>
   </div>
+  <div id="titleBest" class="best"></div>
+  <div class="codexWrap"><div class="codexHead">FIELD NOTES</div><div id="codex" class="codex"></div></div>
   <button class="btn" id="startBtn">Step into the woods</button>
 </div>
 
