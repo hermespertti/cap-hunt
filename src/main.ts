@@ -119,16 +119,47 @@ document.getElementById('app')!.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9fa8ad);
-scene.fog = new THREE.Fog(0x9fa8ad, 12, 56);
+const fog = new THREE.Fog(0x9fa8ad, 12, 56);
+scene.fog = fog;
 
 const camera = new THREE.PerspectiveCamera(68, window.innerWidth / window.innerHeight, 0.05, 100);
 
 // scene-level overcast: keep flat diffuse (no directional shadows)
 renderer.shadowMap.enabled = false;
-scene.add(new THREE.HemisphereLight(0xc9d4d8, 0x4a5240, 1.05));
+const hemi = new THREE.HemisphereLight(0xc9d4d8, 0x4a5240, 1.05);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xf2ede2, 0.75);
 sun.position.set(6, 14, 4);
 scene.add(sun);
+
+// the light is the timer: as timeLeft drains, the forest closes — fog tightens,
+// the sky cools, the sun warms and falls, and (audio) the birds go quiet
+const skyDay = new THREE.Color(0x9fa8ad);
+const skyDusk = new THREE.Color(0x5f6771);
+const sky = new THREE.Color(0x9fa8ad);
+const sunDay = new THREE.Color(0xf2ede2);
+const sunDusk = new THREE.Color(0xd99a62);
+const sunCol = new THREE.Color(0xf2ede2);
+let lightApplied = -1;
+function applyLight(t: number): void {
+  // t: 0 at run start, 1 at the end. Hold the day for the first 55%, then close in.
+  const k = THREE.MathUtils.smoothstep(t, 0.45, 1);
+  fog.near = 12 - k * 6;
+  fog.far = 56 - k * 36;
+  sky.copy(skyDay).lerp(skyDusk, k);
+  scene.background = sky;
+  fog.color.copy(sky);
+  hemi.intensity = 1.05 - k * 0.38;
+  sun.intensity = 0.75 - k * 0.45;
+  sunCol.copy(sunDay).lerp(sunDusk, k);
+  sun.color = sunCol;
+  renderer.toneMappingExposure = 1.05 - k * 0.2;
+  // birds fall silent in the last stretch
+  const birds = THREE.MathUtils.clamp(1 - THREE.MathUtils.smoothstep(t, 0.72, 0.95) * 0.85, 0.15, 1);
+  SFX.setBirdLevel(birds);
+  if (Math.abs(k - lightApplied) < 0.004 && lightApplied >= 0) return;
+  lightApplied = k;
+}
 
 // ---------- canvas texture helpers ----------
 function canvasTex(w: number, h: number, draw: (ctx: CanvasRenderingContext2D, w: number, h: number) => void): THREE.CanvasTexture {
@@ -1500,6 +1531,7 @@ function animate(): void {
     updateMove(dt);
     G.timeLeft -= dt;
     if (G.timeLeft <= 0) { G.timeLeft = 0; endGame(); }
+    applyLight(1 - G.timeLeft / 150);
     // head bob
     const bobY = Math.sin(walkPhase * 2) * 0.024 * moveAmount;
     const bobX = Math.cos(walkPhase) * 0.014 * moveAmount;

@@ -5,6 +5,8 @@ let master: GainNode | null = null;
 let windGain: GainNode | null = null;
 let birdTimer: number | null = null;
 let muted = false;
+let birdLevel = 1;
+export function setBirdLevel(v: number): void { birdLevel = v; }
 
 function ensure(): AudioContext | null {
   try {
@@ -65,6 +67,7 @@ export function startAmbient(): void {
 
 function chirp(c: AudioContext): void {
   if (!master || muted) return;
+  if (Math.random() > birdLevel) return; // the forest is going quiet
   const t = c.currentTime;
   const o = c.createOscillator();
   const g = c.createGain();
