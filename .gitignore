@@ -1,0 +1,21 @@
+# deps / build
+node_modules
+dist
+
+# dev screenshots (not shipped)
+shot-*.png
+tex-*.png
+og-raw.png
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.log
+
+# dev artifacts
+cap-test.mjs
+probe-*.mjs
+__pycache__/
