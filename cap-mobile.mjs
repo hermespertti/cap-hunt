@@ -94,12 +94,18 @@ ok('look drag turns the camera', Math.abs(yaw1 - yaw0) > 0.1, `delta=${(yaw1 - y
 let picked = false;
 for (let i = 0; i < 6 && !picked; i++) {
   const n = await page.evaluate(() => {
-    const s0 = window.__cap.state();
     const sh = window.__cap.nearestShroom();
     if (sh && sh.d < 2.2) { window.__cap.aimAt(sh.x, sh.z); return true; }
-    window.__cap.keys('KeyW', true); return false;
+    if (sh) {
+      // deterministic approach: stand ~1.4u away from the shroom, then aim
+      const s0 = window.__cap.state();
+      const ux = (sh.x - s0.x) / sh.d, uz = (sh.z - s0.z) / sh.d;
+      window.__cap.teleport(sh.x - ux * 1.4, sh.z - uz * 1.4);
+      window.__cap.aimAt(sh.x, sh.z);
+      return true;
+    }
+    return false;
   });
-  if (!n) { await new Promise(r => setTimeout(r, 150)); await page.evaluate(() => window.__cap.keys('KeyW', false)); }
   await new Promise(r => setTimeout(r, 250));
   const beforeP = await page.evaluate(() => window.__cap.state().picks);
   await page.evaluate(async () => {

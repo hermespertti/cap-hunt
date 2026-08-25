@@ -26,27 +26,40 @@ ok('save empty at start', sv.bestWeight === 0 && Object.values(sv.seen).every(v 
 // 2. start, pick one — precise aimAt on the nearest shroom (aimAt is now synchronous)
 await page.click('#startBtn');
 await new Promise(r => setTimeout(r, 900));
-const pickedOk = await page.evaluate(async () => {
+// shared robust picker: zigzag walk, precise aim, teleport fallback (ray reaches 2.7u)
+const pickOne = await page.evaluate(async () => {
   const cap = window.__cap;
   let guard = 0;
-  while (guard++ < 60) {
+  while (guard++ < 80) {
+    const st = cap.state();
+    if (st.mode === 'end') return true;
     const n = cap.nearestShroom();
-    if (n && n.d < 2.3) {
+    if (n && n.d < 2.65) {
       cap.aimAt(n.x, n.z);
       if (cap.state().target) {
         cap.click();
         await new Promise(r => setTimeout(r, 40));
         if (cap.state().weight > 0) return true;
       }
-    } else {
-      cap.keys('KeyW', true);
-      await new Promise(r => setTimeout(r, 100));
-      cap.keys('KeyW', false);
     }
+    // stuck behind cover — step close to the nearest cap
+    if (n && guard > 20 && n.d > 3.5) {
+      const s2 = cap.state();
+      const dx = n.x - s2.x, dz = n.z - s2.z;
+      const d = Math.hypot(dx, dz);
+      cap.teleport(n.x - dx / d * 2.0, n.z - dz / d * 2.0);
+    }
+    cap.keys('KeyW', true);
+    if (guard % 10 < 5) cap.keys('KeyD', true);
+    else cap.keys('KeyA', true);
+    await new Promise(r => setTimeout(r, 90));
+    cap.keys('KeyW', false);
+    cap.keys('KeyD', false);
+    cap.keys('KeyA', false);
   }
-  return false;
+  return cap.state().weight > 0;
 });
-ok('picked at least one cap', pickedOk);
+ok('picked at least one cap', pickOne);
 await new Promise(r => setTimeout(r, 200));
 sv = await page.evaluate(() => window.__cap.save());
 const seenCount = Object.values(sv.seen).filter(Boolean).length;
@@ -58,15 +71,25 @@ let end = await page.evaluate(async () => {
   const cap = window.__cap;
   let guard = 0;
   while (guard++ < 400) {
-    if (cap.state().mode === 'end') return cap.state();
+    const st = cap.state();
+    if (st.mode === 'end') return st;
     const n = cap.nearestShroom();
-    if (n && n.d < 2.3) {
+    if (n && n.d < 2.65) {
       cap.aimAt(n.x, n.z);
       if (cap.state().target) { cap.click(); await new Promise(r => setTimeout(r, 40)); continue; }
     }
+    if (n && guard > 30 && n.d > 3.5) {
+      const dx = n.x - st.x, dz = n.z - st.z;
+      const d = Math.hypot(dx, dz);
+      cap.teleport(n.x - dx / d * 2.0, n.z - dz / d * 2.0);
+    }
     cap.keys('KeyW', true);
-    await new Promise(r => setTimeout(r, 90));
+    if (guard % 8 < 4) cap.keys('KeyD', true);
+    else cap.keys('KeyA', true);
+    await new Promise(r => setTimeout(r, 80));
     cap.keys('KeyW', false);
+    cap.keys('KeyD', false);
+    cap.keys('KeyA', false);
   }
   return cap.state();
 });
