@@ -198,6 +198,37 @@ export function pickSfx(kind: 'good' | 'gold' | 'bad'): void {
   }
 }
 
+export function thud(): void {
+  const c = ensure();
+  if (!c || !master || muted) return;
+  const t = c.currentTime;
+  // low wooden drop
+  const o = c.createOscillator();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(150, t);
+  o.frequency.exponentialRampToValueAtTime(55, t + 0.09);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.16, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  o.connect(g);
+  g.connect(master);
+  o.start(t);
+  o.stop(t + 0.14);
+  // dull body of the sound
+  const src = c.createBufferSource();
+  src.buffer = noiseBuffer(c, 0.08);
+  const lp = c.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 300;
+  const ng = c.createGain();
+  ng.gain.setValueAtTime(0.1, t);
+  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+  src.connect(lp);
+  lp.connect(ng);
+  ng.connect(master);
+  src.start(t);
+}
+
 export function gong(): void {
   const c = ensure();
   if (!c || !master || muted) return;

@@ -945,6 +945,36 @@ for (let i = 0; i < 28; i++) {
   }
 }
 
+// pluck juice: cap flights into the fist, drifting spore motes, ground ring,
+// a fist that clenches, a HUD weight that ticks, and a half-heartbeat freeze on gold
+const moteGeo = new THREE.SphereGeometry(0.014, 5, 4);
+const flights: { g: THREE.Group; from: THREE.Vector3; t: number; dur: number }[] = [];
+const motes: { m: THREE.Mesh; v: THREE.Vector3; t: number; dur: number }[] = [];
+let fistT = 0;
+let freezeS = 0;
+let shownWeight = 0;
+const pickRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.9, 1, 24),
+  new THREE.MeshBasicMaterial({ color: 0xe8f0d8, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
+);
+pickRing.rotation.x = -Math.PI / 2;
+scene.add(pickRing);
+let ringT = 1;
+function spawnMotes(pos: THREE.Vector3, color: number, n = 8): void {
+  for (let i = 0; i < n; i++) {
+    const m = new THREE.Mesh(moteGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false }));
+    m.position.copy(pos);
+    m.position.x += rnd(-0.05, 0.05);
+    m.position.y += rnd(0.02, 0.1);
+    m.position.z += rnd(-0.05, 0.05);
+    world.add(m);
+    motes.push({
+      m, v: new THREE.Vector3(rnd(-0.25, 0.25), rnd(-0.05, 0.18), rnd(-0.25, 0.25)),
+      t: 0, dur: rnd(0.4, 0.75),
+    });
+  }
+}
+
 // target ring
 const targetRing = new THREE.Mesh(
   new THREE.RingGeometry(0.11, 0.16, 20),
@@ -1037,6 +1067,14 @@ function updateArm(dt: number, t: number): void {
   armGroup.scale.set(1, s, 1);
   const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
   armGroup.quaternion.copy(q);
+  // the fist clenches on every pick — a squeeze, not a punch
+  if (fistT > 0) {
+    fistT = Math.max(0, fistT - dt * 4);
+    const sq = Math.sin(fistT * Math.PI);
+    fist.scale.set(1.1 * (1 - 0.12 * sq), 0.8 * (1 + 0.18 * sq), 1.2 * (1 - 0.12 * sq));
+  } else {
+    fist.scale.set(1.1, 0.8, 1.2);
+  }
 }
 
 // ---------- player ----------
@@ -1117,19 +1155,25 @@ function doPickAction(): void {
   if (G.mode !== 'play' || !targetShroom) return;
   punchT = 1;
   armPunchTarget = targetShroom.position;
+  fistT = 1;
   const g = targetShroom;
   targetShroom = null;
   const sp = g.userData.sp as Species;
   const def = SPECIES[sp];
-  // pop scale
-  g.scale.setScalar(1.15);
-  setTimeout(() => {
-    world.remove(g);
-    const idx = pickMeshes.findIndex((m) => m.parent === g);
-    if (idx >= 0) pickMeshes.splice(idx, 1);
-    const si = shrooms.indexOf(g);
-    if (si >= 0) shrooms.splice(si, 1);
-  }, 90);
+  // the cap flies into the fist (no pop-in-vanish)
+  world.remove(g);
+  const idx = pickMeshes.findIndex((m) => m.parent === g);
+  if (idx >= 0) pickMeshes.splice(idx, 1);
+  const si = shrooms.indexOf(g);
+  if (si >= 0) shrooms.splice(si, 1);
+  flights.push({ g, from: g.position.clone(), t: 0, dur: 0.22 });
+  // ground ring + spore motes where the cap was
+  ringT = 0;
+  pickRing.position.set(g.position.x, g.position.y + 0.02, g.position.z);
+  const moteCol = def.gold ? 0xffd23f : def.bad ? 0xd8d2c0 : 0xc9d8a8;
+  spawnMotes(g.position, moteCol, def.gold ? 12 : 7);
+  SFX.thud();
+  if (def.gold) freezeS = 0.06; // half a heartbeat
   G.picks++;
   G.basket[def.name] = (G.basket[def.name] ?? 0) + 1;
   G.weight = Math.max(0, G.weight + def.val);
@@ -1159,7 +1203,7 @@ const pauseEl = document.getElementById('pauseScreen')!;
 const endEl = document.getElementById('endScreen')!;
 
 function updateHud(): void {
-  hudWeight.textContent = `${G.weight}g`;
+  // weight ticks up on its own in the render loop; only reset it here
   hudPicks.textContent = `${G.picks} caps`;
 }
 setInterval(() => {
@@ -1397,8 +1441,49 @@ const clock = new THREE.Clock();
 let tAcc = 0;
 function animate(): void {
   requestAnimationFrame(animate);
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const rawDt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
+  const dt = freezeS > 0 ? rawDt * 0.18 : rawDt; // golden-cap freeze: half a heartbeat
+  if (freezeS > 0) freezeS -= rawDt;
+
+  // pluck feedback: flights into the fist, drifting motes, ground ring, weight tick
+  for (let i = flights.length - 1; i >= 0; i--) {
+    const f = flights[i];
+    f.t += rawDt / f.dur;
+    if (f.t >= 1) {
+      world.remove(f.g);
+      flights.splice(i, 1);
+      continue;
+    }
+    f.g.position.lerpVectors(f.from, handWorld, f.t);
+    f.g.scale.setScalar(Math.max(0.15, 1 - f.t * 0.5));
+  }
+  for (let i = motes.length - 1; i >= 0; i--) {
+    const mo = motes[i];
+    mo.t += rawDt;
+    mo.m.position.addScaledVector(mo.v, rawDt);
+    mo.v.multiplyScalar(0.94);
+    const k = mo.t / mo.dur;
+    if (k >= 1) {
+      world.remove(mo.m);
+      (mo.m.material as THREE.Material).dispose();
+      motes.splice(i, 1);
+    } else {
+      (mo.m.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - k);
+      mo.m.scale.setScalar(1 - k * 0.5);
+    }
+  }
+  if (ringT < 1) {
+    ringT = Math.min(1, ringT + rawDt * 2.6);
+    const rk = ringT;
+    pickRing.scale.setScalar(0.3 + rk * 1.1);
+    (pickRing.material as THREE.MeshBasicMaterial).opacity = 0.5 * (1 - rk);
+  }
+  if (shownWeight !== G.weight) {
+    shownWeight = THREE.MathUtils.damp(shownWeight, G.weight, 10, rawDt);
+    if (Math.abs(shownWeight - G.weight) < 0.6) shownWeight = G.weight;
+    hudWeight.textContent = `${Math.round(shownWeight)}g`;
+  }
 
   if (G.mode === 'title') {
     // slow cinematic dolly toward the thicket, arm reaching
