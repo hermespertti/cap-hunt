@@ -103,6 +103,8 @@ const G = {
   },
   save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen } }),
   clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false } }; saveSave(); renderCodex(); },
+  seed: () => forestSeed,
+  newWoods: () => newWoods(),
   texDataUrl: () => (window as any).__capCamo.toDataURL('image/png'),
 };
 
@@ -139,7 +141,37 @@ function canvasTex(w: number, h: number, draw: (ctx: CanvasRenderingContext2D, w
   t.anisotropy = 4;
   return t;
 }
-function rnd(a: number, b: number): number { return a + Math.random() * (b - a); }
+// ---------- a personal forest: one seed per player, persisted ----------
+// the woods are yours: same trees, same caps, every run. "new woods" re-rolls.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const SEED_KEY = 'caphunt_seed_v1';
+function loadSeed(): number {
+  try {
+    const raw = localStorage.getItem(SEED_KEY);
+    const n = raw ? parseInt(raw, 10) : NaN;
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch { /* private mode */ }
+  const s = 1 + ((Math.random() * 0x7fffffff) | 0);
+  try { localStorage.setItem(SEED_KEY, String(s)); } catch { /* fine */ }
+  return s;
+}
+const forestSeed = loadSeed();
+// world construction draws from srnd (deterministic per seed); runtime noise keeps Math.random
+const srnd = mulberry32(forestSeed);
+function newWoods(): void {
+  const s = 1 + ((Math.random() * 0x7fffffff) | 0);
+  try { localStorage.setItem(SEED_KEY, String(s)); } catch { /* fine */ }
+  location.reload();
+}
+function rnd(a: number, b: number): number { return a + srnd() * (b - a); }
 
 // mossy ground: green-brown base, soft moss patches, leaf litter flecks, twigs
 const groundTex = canvasTex(512, 512, (x, w, h) => {
@@ -161,7 +193,7 @@ const groundTex = canvasTex(512, 512, (x, w, h) => {
   // leaf litter flecks
   for (let i = 0; i < 420; i++) {
     const cols = ['#8a6a3c', '#9c7a44', '#7a5a32', '#a8894e', '#6e7a3a'];
-    x.fillStyle = cols[(Math.random() * cols.length) | 0];
+    x.fillStyle = cols[(srnd() * cols.length) | 0];
     x.globalAlpha = rnd(0.25, 0.7);
     x.save(); x.translate(rnd(0, w), rnd(0, h)); x.rotate(rnd(0, 6.3));
     x.beginPath(); x.ellipse(0, 0, rnd(2, 5), rnd(1, 2.4), 0, 0, 7); x.fill();
@@ -201,7 +233,7 @@ const plankTex = canvasTex(512, 512, (x, w, h) => {
       x.stroke();
     }
     // end grain / knots
-    if (Math.random() < 0.7) {
+    if (srnd() < 0.7) {
       const kx = rnd(30, w - 30), ky = y0 + plankH * 0.5;
       const g = x.createRadialGradient(kx, ky, 0, kx, ky, rnd(4, 9));
       g.addColorStop(0, 'rgba(70,62,50,0.8)');
@@ -340,7 +372,7 @@ const camoTex = canvasTex(512, 512, (x, w, h) => {
     const sx = rnd(0, w), sy = rnd(0, h);
     const ang = 0.35 + rnd(-0.18, 0.18); // mostly diagonal, consistent flow
     const len = rnd(18, 70);
-    x.strokeStyle = Math.random() < 0.5 ? 'rgba(107,76,52,0.32)' : 'rgba(240,234,216,0.3)';
+    x.strokeStyle = srnd() < 0.5 ? 'rgba(107,76,52,0.32)' : 'rgba(240,234,216,0.3)';
     x.lineWidth = rnd(2, 7);
     x.lineCap = 'round';
     x.beginPath();
@@ -353,7 +385,7 @@ const camoTex = canvasTex(512, 512, (x, w, h) => {
   blob('rgba(178,156,116,ALPHA)', 15, 14, 40, 0.8);
   // stipple dots on top (subtle fabric grain)
   for (let i = 0; i < 1100; i++) {
-    x.fillStyle = Math.random() < 0.5 ? 'rgba(240,236,222,0.16)' : 'rgba(96,78,54,0.14)';
+    x.fillStyle = srnd() < 0.5 ? 'rgba(240,236,222,0.16)' : 'rgba(96,78,54,0.14)';
     x.beginPath(); x.arc(rnd(0, w), rnd(0, h), rnd(0.3, 0.9), 0, 7); x.fill();
   }
 });
@@ -456,7 +488,7 @@ const groundH = (x: number, z: number): number => {
     scl.setScalar(rnd(0.6, 1.8));
     mtx.compose(pv, q, scl);
     im.setMatrixAt(i, mtx);
-    im.setColorAt(i, leafCols[(Math.random() * leafCols.length) | 0]);
+    im.setColorAt(i, leafCols[(srnd() * leafCols.length) | 0]);
   }
   world.add(im);
 }
@@ -489,7 +521,7 @@ const trees: TreeRec[] = [];
   // old-growth giants cluster on the ridge itself
   const rollKind = (x: number, z: number): TreeKind => {
     const north = Math.max(0, Math.min(1, (-z - 8) / 32));
-    const r = Math.random();
+    const r = srnd();
     if (z < -14 && r < 0.16) return 'giant';
     if (r < 0.2 + north * 0.32) return 'pine';
     if (r < 0.48) return 'birch';
@@ -532,7 +564,7 @@ const trees: TreeRec[] = [];
       world.add(top);
     } else {
       // rounded crown blobs (giants are conifers, so deciduous only here)
-      const blobs = 2 + ((Math.random() * 2) | 0);
+      const blobs = 2 + ((srnd() * 2) | 0);
       for (let b = 0; b < blobs; b++) {
         const br = rnd(1.4, 2.6);
         const canopy = new THREE.Mesh(new THREE.IcosahedronGeometry(br, 1),
@@ -781,7 +813,9 @@ const bushSpots: { x: number; z: number }[] = [];
 }
 const berryGeo = new THREE.SphereGeometry(0.016, 6, 5);
 const berryMat = new THREE.MeshStandardMaterial({ color: 0x2e3450, roughness: 0.35 });
-for (const bs of bushSpots) {
+for (let bi = 0; bi < bushSpots.length; bi++) {
+  const bs = bushSpots[bi];
+  const seeded = bi < 4; // the spawn-corridor thicket
   const bush = new THREE.Group();
   const baseY = groundH(bs.x, bs.z);
   // dark foliage core: keeps the leaf cards from reading as floating sprites
@@ -794,7 +828,7 @@ for (const bs of bushSpots) {
   bush.add(core);
   const cards = (rnd(46, 66)) | 0;
   for (let i = 0; i < cards; i++) {
-    const leaf = new THREE.Mesh(leafCardGeo, Math.random() < 0.1 ? yellowMat : bushMats[(Math.random() * bushMats.length) | 0]);
+    const leaf = new THREE.Mesh(leafCardGeo, srnd() < 0.1 ? yellowMat : bushMats[(srnd() * bushMats.length) | 0]);
     const ang = rnd(0, 6.3);
     const rad = rnd(0.3, 0.9);
     leaf.position.set(Math.cos(ang) * rad, rnd(0.06, 0.85), Math.sin(ang) * rad);
@@ -814,8 +848,9 @@ for (const bs of bushSpots) {
   bush.position.set(bs.x, baseY, bs.z);
   world.add(bush);
   // litter around the bush: field mushrooms in the open ground (host-bound
-  // species grow strictly at their trees, so the bush floor stays field-only)
-  const count = 1 + ((Math.random() * 3) | 0);
+  // species grow strictly at their trees, so the bush floor stays field-only).
+  // seeded thicket by the spawn keeps its fuller litter — it's the title shot.
+  const count = seeded ? 1 + ((srnd() * 3) | 0) : 1 + ((srnd() * 2) | 0);
   for (let i = 0; i < count; i++) {
     const ang = rnd(0, 6.3), rad = rnd(0.25, 1.1);
     const mx = bs.x + Math.cos(ang) * rad, mz = bs.z + Math.sin(ang) * rad;
@@ -836,16 +871,16 @@ function pickHost(kind: TreeKind): Species {
   const w = HOST_W[kind];
   let tot = 0;
   for (const [, n] of w) tot += n;
-  let r = Math.random() * tot;
+  let r = srnd() * tot;
   for (const [sp, n] of w) { r -= n; if (r <= 0) return sp; }
   return w[0][0];
 }
 for (const tr of trees) {
-  const roll = Math.random();
+  const roll = srnd();
   const clusters = roll < 0.15 ? 0 : roll < 0.4 ? 2 : 1;
   for (let c = 0; c < clusters; c++) {
     const sp = pickHost(tr.kind);
-    const n = 1 + ((Math.random() * 1.8) | 0); // 1..2 caps per cluster
+    const n = 1 + ((srnd() * 1.8) | 0); // 1..2 caps per cluster
     for (let i = 0; i < n; i++) {
       const ang = rnd(0, 6.3), rad = tr.r + rnd(0.25, 0.85); // close enough that the host is the nearest trunk
       const mx = tr.x + Math.cos(ang) * rad, mz = tr.z + Math.sin(ang) * rad;
@@ -854,7 +889,8 @@ for (const tr of trees) {
   }
 }
 // open-ground champignons in the grass, clear of every trunk
-for (let i = 0; i < 40; i++) {
+// (28, not 40: the field must tempt, never carry — 100g has to be earned)
+for (let i = 0; i < 28; i++) {
   const x = rnd(-45, 45), z = rnd(-45, 45);
   let clear = true;
   for (const t of trees) if (Math.hypot(t.x - x, t.z - z) < 2.2) { clear = false; break; }
@@ -865,7 +901,7 @@ for (let i = 0; i < 40; i++) {
   const plantAt = (sp: Species, x: number, z: number) => world.add(makeMushroom(sp, x, groundH(x, z), z));
   const underKind = (kinds: TreeKind[]): [number, number] => {
     const pool = trees.filter((t) => kinds.includes(t.kind));
-    const t = pool[(Math.random() * pool.length) | 0];
+    const t = pool[(srnd() * pool.length) | 0];
     const ang = rnd(0, 6.3), rad = t.r + rnd(0.25, 0.85);
     return [t.x + Math.cos(ang) * rad, t.z + Math.sin(ang) * rad];
   };
@@ -899,7 +935,7 @@ for (let i = 0; i < 40; i++) {
       if (ni >= 0) shrooms.splice(ni, 1);
       let mx: number, mz: number;
       if (giants.length) {
-        const host = giants[(Math.random() * giants.length) | 0];
+        const host = giants[(srnd() * giants.length) | 0];
         const ang = rnd(0, 6.3), rad = host.r + rnd(0.3, 0.9);
         mx = host.x + Math.cos(ang) * rad; mz = host.z + Math.sin(ang) * rad;
       } else { mx = rnd(-38, 38); mz = rnd(-38, 38); }
@@ -1233,6 +1269,8 @@ document.getElementById('startBtn')!.addEventListener('click', () => {
   if (!IS_TOUCH) { try { renderer.domElement.requestPointerLock(); } catch { /* fine */ } }
   if (IS_TOUCH) document.getElementById('hint')!.textContent = 'drag left half to walk · drag right half to look · tap to pick';
 });
+// "new woods": re-roll the forest seed (field notes + best basket are yours to keep)
+document.getElementById('newWoodsBtn')!.addEventListener('click', () => newWoods());
 pauseEl.addEventListener('click', () => {
   if (G.mode !== 'pause') return;
   G.mode = 'play';

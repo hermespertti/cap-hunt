@@ -36,8 +36,8 @@
   .float.gold{color:#ffd23f;font-size:19px;}
   .float.bad{color:#e0a0a0;}
   @keyframes rise{0%{opacity:0;transform:translateY(14px);}15%{opacity:1;transform:translateY(0);}80%{opacity:1;}100%{opacity:0;transform:translateY(-26px);}}
-  .screen{position:fixed;inset:0;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(16,20,15,.78);backdrop-filter:blur(5px);color:#f4efe2;text-align:center;}
-  #titleScreen{background:rgba(12,16,12,.42);backdrop-filter:none;}
+  .screen{position:fixed;inset:0;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(16,20,15,.78);backdrop-filter:blur(5px);color:#f4efe2;text-align:center;overflow-y:auto;}
+  #titleScreen{background:rgba(12,16,12,.42);backdrop-filter:none;padding:18px 12px;justify-content:flex-start;}
   .kicker{font-size:12px;letter-spacing:5px;font-weight:800;color:#9ab87a;margin-bottom:14px;}
   .bigtitle{font-size:64px;font-weight:900;letter-spacing:2px;text-shadow:0 6px 30px rgba(0,0,0,.6);}
   .tag{margin-top:10px;font-size:16px;color:#c9c2ae;font-style:italic;max-width:520px;line-height:1.55;}
@@ -46,6 +46,8 @@
   .rule b{display:block;font-size:13px;color:#f4efe2;margin-bottom:3px;}
   .btn{margin-top:30px;pointer-events:auto;cursor:pointer;background:#a8d878;color:#1c2414;border:none;border-radius:14px;padding:15px 44px;font-size:18px;font-weight:900;letter-spacing:1px;box-shadow:0 8px 24px rgba(120,180,80,.35);transition:transform .12s;touch-action:manipulation;-webkit-tap-highlight-color:transparent;}
   .btn:hover{transform:scale(1.05);}
+  .btnlink{margin-top:14px;pointer-events:auto;cursor:pointer;background:none;border:none;color:#b8b2a0;font-size:12px;letter-spacing:1px;text-decoration:underline;text-underline-offset:3px;transition:color .15s;-webkit-tap-highlight-color:transparent;}
+  .btnlink:hover{color:#f4efe2;}
   .best{margin-top:18px;font-size:12px;letter-spacing:2px;font-weight:800;color:#ffd23f;text-shadow:0 2px 8px rgba(0,0,0,.5);}
   .codexWrap{margin-top:14px;max-width:640px;width:92vw;}
   .codexHead{font-size:10px;letter-spacing:4px;font-weight:800;color:#9ab87a;margin-bottom:6px;}
@@ -61,6 +63,19 @@
   body.menu .pauseBtn{display:none;}
   .joy{position:fixed;z-index:7;width:120px;height:120px;border:2px solid rgba(244,239,226,.35);border-radius:50%;background:rgba(24,28,20,.25);display:none;pointer-events:none;}
   #joyKnob{position:absolute;left:50%;top:50%;width:48px;height:48px;margin:-24px 0 0 -24px;border-radius:50%;background:rgba(244,239,226,.5);border:2px solid rgba(244,239,226,.8);pointer-events:none;}
+  @media (max-height:760px){
+    .bigtitle{font-size:46px;}
+    .kicker{margin-bottom:8px;}
+    .tag{margin-top:6px;font-size:14px;line-height:1.45;}
+    .rules{margin-top:14px;gap:10px;}
+    .rule{padding:7px 10px;font-size:11px;max-width:140px;}
+    .btn{margin-top:16px;padding:12px 36px;font-size:16px;}
+    .btnlink{margin-top:8px;}
+    .best{margin-top:10px;}
+    .codexWrap{margin-top:8px;}
+    .codex{gap:5px;}
+    .citem{padding:3px 8px;font-size:10px;}
+  }
   @media (max-width:700px){
     .bigtitle{font-size:42px;}
     #weight{font-size:26px;}
@@ -100,7 +115,8 @@
   <div class="bigtitle">CAP&nbsp;HUNT</div>
   <div class="tag">Overcast woods, moss underfoot, an old boardwalk you're not allowed on.
   Fill your basket with <b>100 grams</b> of mushrooms before the light fails.
-  Some caps feed you. One cap feeds your legend. One cap is a white lie.</div>
+  Some caps feed you. One cap feeds your legend. One cap is a white lie.
+  And this forest is <b>yours</b> — it grows the same way every time you come back.</div>
   <div class="rules">
     <div class="rule"><b>Pick</b>Aim at a mushroom, click. Your hand reaches in for you.</div>
     <div class="rule"><b>Beware</b>The Deadly White looks respectable. That's the trick.</div>
@@ -110,6 +126,7 @@
   <div id="titleBest" class="best"></div>
   <div class="codexWrap"><div class="codexHead">FIELD NOTES</div><div id="codex" class="codex"></div></div>
   <button class="btn" id="startBtn">Step into the woods</button>
+  <button class="btnlink" id="newWoodsBtn">…or walk into new woods</button>
 </div>
 
 <div id="pauseScreen" class="screen" style="display:none">
