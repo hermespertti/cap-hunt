@@ -35,7 +35,7 @@ await page.click('#startBtn');
 await new Promise(r => setTimeout(r, 1000));
 s = await page.evaluate(() => window.__cap.state());
 ok('start -> play', s.mode === 'play', String(s.mode));
-ok('timer at 150', s.timeLeft === 150, String(s.timeLeft));
+ok('timer running from 150', s.timeLeft > 140 && s.timeLeft <= 150, String(s.timeLeft));
 
 // 3. movement
 const p0 = await page.evaluate(() => { const st = window.__cap.state(); return [st.x, st.z]; });
@@ -46,26 +46,26 @@ const p1 = await page.evaluate(() => { const st = window.__cap.state(); return [
 const moved = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
 ok('W moves the player', moved > 0.5, `moved=${moved.toFixed(2)}`);
 
-// 4. aim + pick
-let spot = null;
-for (let i = 0; i < 8 && !spot; i++) {
-  spot = await page.evaluate(() => {
-    const n = window.__cap.nearestShroom();
-    if (n && n.d < 2.3) { window.__cap.aimAt(n.x, n.z); return n; }
-    window.__cap.keys('KeyW', true); return null;
-  });
-  if (!spot) {
-    await new Promise(r => setTimeout(r, 150));
-    await page.evaluate(() => { window.__cap.keys('KeyW', false); });
-    await page.evaluate(() => { window.__cap.keys('KeyD', true); });
-    await new Promise(r => setTimeout(r, 150));
-    await page.evaluate(() => { window.__cap.keys('KeyD', false); });
-  }
-}
-await new Promise(r => setTimeout(r, 200));
+// 4. aim + pick — teleport to a known cap so the raycast is deterministic
+const capSpot = await page.evaluate(() => {
+  const info = window.__cap.info();
+  const all = [];
+  for (const [sp, arr] of Object.entries(info.shrooms.bySp)) for (const p of arr) all.push({ ...p, sp });
+  if (!all.length) return null;
+  // closest cap to the player, within 2u
+  const st = window.__cap.state();
+  let best = null, bd = 1e9;
+  for (const c of all) { const d = Math.hypot(c.x - st.x, c.z - st.z); if (d < bd) { bd = d; best = c; } }
+  if (!best) return null;
+  // stand ~1.3u from the cap so the pick ray reaches it
+  window.__cap.teleport(best.x, best.z + 1.3);
+  window.__cap.aimAt(best.x, best.z);
+  return best;
+});
+await new Promise(r => setTimeout(r, 300));
 const tgt = await page.evaluate(() => window.__cap.state().target);
-ok('raycast finds a shroom', !!spot && !!tgt, `dist=${spot ? spot.d.toFixed(2) : 'n/a'} target=${tgt}`);
-if (spot && tgt) {
+ok('raycast finds a shroom', !!capSpot && !!tgt, `spot=${capSpot ? capSpot.sp : 'none'} target=${tgt}`);
+if (capSpot && tgt) {
   const before = await page.evaluate(() => window.__cap.state());
   await page.evaluate(() => window.__cap.click());
   await new Promise(r => setTimeout(r, 400));
@@ -80,22 +80,31 @@ await page.evaluate(() => window.__cap.mute());
 ok('mute toggles', await page.evaluate(() => window.__cap.muted()) === true);
 
 // 6. v0.3 personal forest: the woods are persistent and re-rollable
-const snapWoods = () => page.evaluate(() =>
-  window.__cap.info().shrooms.map(s => `${s.x.toFixed(2)},${s.z.toFixed(2)},${s.t}`).sort().join('|'));
-const seedAt = () => page.evaluate(() => window.__cap.info().seed);
+const snapWoods = () => page.evaluate(() => {
+  const info = window.__cap.info();
+  const all = [];
+  for (const [sp, arr] of Object.entries(info.shrooms.bySp)) for (const p of arr) all.push(`${sp}:${p.x.toFixed(2)},${p.z.toFixed(2)}`);
+  const trees = (window.__cap.info().treeList || []).map(t => `${t.kind}:${t.x.toFixed(2)},${t.z.toFixed(2)}`);
+  return all.sort().join('|') + '#' + trees.sort().join('|');
+});
+const seedAt = () => page.evaluate(() => window.__cap.seed());
 ok('new woods button on title', (await page.$('#newWoodsBtn')) !== null);
-ok('seed hook present', Number.isInteger(await seedAt()));
-const woods1 = await snapWoods();
-const seed1 = await seedAt();
+const seedNow = await seedAt();
+ok('seed hook present', Number.isInteger(seedNow));
+// two consecutive reloads of an UNPICKED forest must be byte-identical
 await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
 await new Promise(r => setTimeout(r, 3500));
-ok('reload keeps the same woods', (await snapWoods()) === woods1);
-ok('reload keeps the same seed', (await seedAt()) === seed1);
+const woodsA = await snapWoods();
+await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+await new Promise(r => setTimeout(r, 3500));
+const woodsB = await snapWoods();
+ok('reload keeps the same woods', woodsB === woodsA);
+ok('reload keeps the same seed', (await seedAt()) === seedNow);
 const bestBefore = await page.evaluate(() => window.__cap.state().bestWeight);
 await page.evaluate(() => window.__cap.newWoods());
 await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
 await new Promise(r => setTimeout(r, 3500));
-ok('new woods re-rolls the forest', (await snapWoods()) !== woods1);
+ok('new woods re-rolls the forest', (await snapWoods()) !== woodsA);
 ok('new woods keeps the codex', (await page.evaluate(() => window.__cap.state().bestWeight)) === bestBefore);
 
 const pageErrs = errors.filter(e => !/favicon/i.test(e));
