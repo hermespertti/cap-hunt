@@ -953,8 +953,12 @@ function startGame(): void {
 }
 
 // ---------- input ----------
+const IS_TOUCH = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+if (IS_TOUCH) document.body.classList.add('touch');
 let started = false;
-document.addEventListener('mousedown', (e) => {
+let joyX = 0, joyY = 0;
+document.addEventListener('mousedown', () => {
+  if (IS_TOUCH) return; // touch: the pointer logic below handles picking
   if (G.mode === 'play') doPickAction();
 });
 document.addEventListener('keydown', (e) => {
@@ -973,20 +977,90 @@ document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement && G.mode === 'pause') {
     G.mode = 'play';
     pauseEl.style.display = 'none';
-  } else if (!document.pointerLockElement && G.mode === 'play' && G.started) {
+  } else if (!IS_TOUCH && !document.pointerLockElement && G.mode === 'play' && G.started) {
     G.mode = 'pause';
     pauseEl.style.display = 'flex';
   }
 });
+document.addEventListener('contextmenu', (e) => e.preventDefault());
 document.getElementById('startBtn')!.addEventListener('click', () => {
   started = true;
-  renderer.domElement.requestPointerLock();
-  startGame();
+  startGame(); // first — on iOS requestPointerLock can throw, which used to swallow the start
+  if (!IS_TOUCH) { try { renderer.domElement.requestPointerLock(); } catch { /* fine */ } }
+  if (IS_TOUCH) document.getElementById('hint')!.textContent = 'drag left half to walk · drag right half to look · tap to pick';
 });
 pauseEl.addEventListener('click', () => {
-  if (G.mode === 'pause') renderer.domElement.requestPointerLock();
+  if (G.mode !== 'pause') return;
+  G.mode = 'play';
+  pauseEl.style.display = 'none';
+  if (!IS_TOUCH) { try { renderer.domElement.requestPointerLock(); } catch { /* fine */ } }
 });
 document.getElementById('againBtn')!.addEventListener('click', () => location.reload());
+document.getElementById('pauseBtn')!.addEventListener('click', () => {
+  if (G.mode !== 'play') return;
+  G.mode = 'pause';
+  pauseEl.style.display = 'flex';
+});
+
+// ---------- touch controls (coarse pointers) ----------
+const joyEl = document.getElementById('joy')!;
+const joyKnob = document.getElementById('joyKnob')!;
+let joyId: number | null = null;
+let joyOrigin = { x: 0, y: 0 };
+let lookId: number | null = null;
+let lookLast = { x: 0, y: 0 };
+let lookMoved = 0;
+let lookDownAt = 0;
+const JOY_R = 48;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (G.mode !== 'play' || !IS_TOUCH) return;
+  e.preventDefault();
+  try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* synthetic ids (tests) */ }
+  if (e.clientX < window.innerWidth * 0.45 && joyId === null) {
+    joyId = e.pointerId;
+    joyOrigin = { x: e.clientX, y: e.clientY };
+    joyEl.style.left = (e.clientX - 60) + 'px';
+    joyEl.style.top = (e.clientY - 60) + 'px';
+    joyEl.style.display = 'block';
+  } else if (lookId === null) {
+    lookId = e.pointerId;
+    lookLast = { x: e.clientX, y: e.clientY };
+    lookMoved = 0;
+    lookDownAt = performance.now();
+  }
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (G.mode !== 'play') return;
+  if (e.pointerId === joyId) {
+    let dx = e.clientX - joyOrigin.x, dy = e.clientY - joyOrigin.y;
+    const d = Math.hypot(dx, dy);
+    if (d > JOY_R) { dx = dx / d * JOY_R; dy = dy / d * JOY_R; }
+    joyKnob.style.transform = `translate(${dx}px,${dy}px)`;
+    joyX = dx / JOY_R;
+    joyY = dy / JOY_R;
+  } else if (e.pointerId === lookId) {
+    const dx = e.clientX - lookLast.x, dy = e.clientY - lookLast.y;
+    lookMoved += Math.abs(dx) + Math.abs(dy);
+    lookLast = { x: e.clientX, y: e.clientY };
+    const S = 0.0045;
+    player.yaw -= dx * S;
+    player.pitch -= dy * S;
+    player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch));
+  }
+});
+const endTouch = (e: PointerEvent) => {
+  if (e.pointerId === joyId) {
+    joyId = null;
+    joyX = 0; joyY = 0;
+    joyEl.style.display = 'none';
+    joyKnob.style.transform = 'translate(0,0)';
+  } else if (e.pointerId === lookId) {
+    lookId = null;
+    if (lookMoved < 14 && performance.now() - lookDownAt < 300 && G.mode === 'play') doPickAction();
+  }
+};
+renderer.domElement.addEventListener('pointerup', endTouch);
+renderer.domElement.addEventListener('pointercancel', endTouch);
 
 // ---------- movement ----------
 const WALK = 3.1, RUN = 5.0;
@@ -998,6 +1072,7 @@ function updateMove(dt: number): void {
   if (keys.has('KeyS') || keys.has('ArrowDown')) dir.sub(fwd);
   if (keys.has('KeyD') || keys.has('ArrowRight')) dir.add(right);
   if (keys.has('KeyA') || keys.has('ArrowLeft')) dir.sub(right);
+  if (joyX !== 0 || joyY !== 0) { dir.addScaledVector(fwd, -joyY); dir.addScaledVector(right, joyX); }
   const moving = dir.lengthSq() > 0;
   moveAmount = THREE.MathUtils.damp(moveAmount, moving ? 1 : 0, 8, dt);
   if (moving) {
