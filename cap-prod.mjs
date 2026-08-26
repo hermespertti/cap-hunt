@@ -107,6 +107,32 @@ await new Promise(r => setTimeout(r, 3500));
 ok('new woods re-rolls the forest', (await snapWoods()) !== woodsA);
 ok('new woods keeps the codex', (await page.evaluate(() => window.__cap.state().bestWeight)) === bestBefore);
 
+// 7. v0.4 rituals: first-pick discovery note + end-screen ghost bar
+await page.evaluate(() => window.__cap.clearSave());
+await page.click('#startBtn');
+await new Promise(r => setTimeout(r, 700));
+const dSpot = await page.evaluate(() => {
+  const st = window.__cap.state();
+  const info = window.__cap.info();
+  const all = [];
+  for (const [sp, arr] of Object.entries(info.shrooms.bySp)) for (const p of arr) all.push({ ...p, sp });
+  let best = null, bd = 1e9;
+  for (const c of all) { const d = Math.hypot(c.x - st.x, c.z - st.z); if (d < bd) { bd = d; best = c; } }
+  if (!best) return null;
+  window.__cap.teleport(best.x, best.z + 1.3);
+  window.__cap.aimAt(best.x, best.z);
+  return best;
+});
+if (dSpot) {
+  await new Promise(r => setTimeout(r, 60));
+  await page.evaluate(() => window.__cap.click());
+  await new Promise(r => setTimeout(r, 250));
+  ok('first pick raises a discovery note', (await page.$('.float.note')) !== null);
+}
+await page.evaluate(() => window.__cap.skipTime(150));
+await new Promise(r => setTimeout(r, 900));
+ok('end screen shows the per-woods ghost bar', (await page.$('#endGhost .glabel')) !== null);
+
 const pageErrs = errors.filter(e => !/favicon/i.test(e));
 ok('no page errors', pageErrs.length === 0, pageErrs.slice(0, 3).join(' | '));
 
