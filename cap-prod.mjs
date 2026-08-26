@@ -170,7 +170,26 @@ if (mSpot) {
   ok('cap regrows after its real-time window', (await page.evaluate(() => window.__cap.info().stubs)) === 0);
 }
 
-// 9. v0.6 perf guard: instanced rendering must keep the scene lean —
+// 9. v0.7 body: crouch + jump on the deployed build
+await page.click('#startBtn');
+await new Promise(r => setTimeout(r, 700));
+{
+  const g0 = await page.evaluate(() => window.__cap.state().y);
+  await page.evaluate(() => window.__cap.jump());
+  await new Promise(r => setTimeout(r, 180));
+  const air = await page.evaluate(() => window.__cap.state());
+  ok('jump lifts off (v0.7)', air.airborne === true && air.y > g0 + 0.25, `y=${air.y.toFixed(2)} airborne=${air.airborne}`);
+  await new Promise(r => setTimeout(r, 900));
+  ok('jump lands (v0.7)', (await page.evaluate(() => window.__cap.state())).airborne === false);
+}
+{
+  await page.evaluate(() => window.__cap.keys('ControlLeft', true));
+  await new Promise(r => setTimeout(r, 900));
+  ok('crouch lowers the eye (v0.7)', (await page.evaluate(() => window.__cap.state())).crouch > 0.9);
+  await page.evaluate(() => window.__cap.keys('ControlLeft', false));
+}
+
+// 10. v0.6 perf guard: instanced rendering must keep the scene lean —
 //    2,700+ draw calls in v0.5 dropped to ~75; a regression back to
 //    per-mesh rendering would blow well past 200
 const perf = await page.evaluate(() => window.__cap.perf());
