@@ -30,11 +30,21 @@ let _frameT0 = 0;
     forestCaps: G.forestCaps,
     basket: { ...G.basket }, target: G.targetName, x: player.x, z: player.z,
     y: player.y, yaw: player.yaw, pitch: player.pitch,
+    crouch: crouchT, vy, airborne: airborneNow,
   }),
   keys: (k: string, down: boolean) => {
     if (down) keys.add(k); else keys.delete(k);
   },
   click: () => doPickAction(),
+  jump: () => {
+    const gy = groundH(player.x, player.z) + (onBoard(player.x, player.z) ? boardTop : 0);
+    if (player.y - gy <= 0.02 && vy <= 0.0001) vy = JUMP_V;
+  },
+  crouch: (down: boolean) => {
+    // instant crouch for tests (bypasses the damping)
+    crouchT = down ? 1 : 0;
+    if (!down) eyeH(); // re-sync helpers
+  },
   teleport: (x: number, z: number) => {
     player.x = x; player.z = z;
   },
@@ -43,7 +53,7 @@ let _frameT0 = 0;
     syncCameraAndTarget(); // synchronous — tests must not race the rAF raycast
   },
   aimAt: (x: number, z: number) => {
-    const px = player.x, pz = player.z, eyeY = player.y + 1.5;
+    const px = player.x, pz = player.z, eyeY = player.y + eyeH();
     const dx = x - px, dz = z - pz;
     player.yaw = Math.atan2(-dx, -dz);
     const hd = Math.max(0.2, Math.hypot(dx, dz));
@@ -82,6 +92,40 @@ let _frameT0 = 0;
   },
   mute: () => SFX.setMuted(!SFX.isMuted()),
   muted: () => SFX.isMuted(),
+  legParts: () => {
+    // diagnostic: world positions of hips/shin bases, in camera space
+    const wp = new THREE.Vector3(), cr = new THREE.Vector3();
+    const out: { n: string; x: number; y: number; z: number }[] = [];
+    legs.forEach((L, i) => {
+      L.hip.getWorldPosition(wp);
+      camera.worldToLocal(cr.copy(wp));
+      out.push({ n: 'hip' + i, x: +cr.x.toFixed(3), y: +cr.y.toFixed(3), z: +cr.z.toFixed(3) });
+      L.shin.getWorldPosition(wp);
+      camera.worldToLocal(cr.copy(wp));
+      out.push({ n: 'shin' + i, x: +cr.x.toFixed(3), y: +cr.y.toFixed(3), z: +cr.z.toFixed(3) });
+      const boot = L.shin.children[0];
+      if (boot) {
+        boot.getWorldPosition(wp);
+        camera.worldToLocal(cr.copy(wp));
+        out.push({ n: 'boot' + i, x: +cr.x.toFixed(3), y: +cr.y.toFixed(3), z: +cr.z.toFixed(3) });
+      }
+    });
+    return out;
+  },
+  handParts: () => {
+    // diagnostic: world positions of the fist + its digit children, in camera
+    // space, so a visual probe can measure real gaps instead of guessing.
+    const wp = new THREE.Vector3(), cr = new THREE.Vector3();
+    const parts: { n: string; x: number; y: number; z: number }[] = [];
+    const push = (o: THREE.Object3D, n: string) => {
+      o.getWorldPosition(wp);
+      camera.worldToLocal(cr.copy(wp));
+      parts.push({ n, x: +cr.x.toFixed(3), y: +cr.y.toFixed(3), z: +cr.z.toFixed(3) });
+    };
+    push(fist, 'fist');
+    fist.children.forEach((c, i) => push(c, ['knuckle', 'f0', 'f1', 'f2', 'f3', 'thumb'][i] ?? 'c' + i));
+    return parts;
+  },
   skipTime: (s: number) => { G.timeLeft = Math.max(0, G.timeLeft - s); },
   info: () => {
     const byKind: Record<string, number> = {};
@@ -1530,28 +1574,38 @@ const cuff = new THREE.Mesh(
   new THREE.MeshStandardMaterial({ map: cuffTex, roughness: 0.9 }),
 );
 cuff.position.y = 0.5;
+// the hand: a fist seen from behind — a rounded hand block, a row of four
+// knuckle bumps fused onto its top edge (the far edge, toward the target), and
+// a thumb on the body side. every part's base is buried in the block, so
+// nothing floats. digits are in FIST-LOCAL space (fist center = origin); the
+// top edge is local +y, the body side is +x.
 const fist = new THREE.Mesh(
-  new THREE.SphereGeometry(0.066, 10, 8),
+  new THREE.BoxGeometry(0.08, 0.062, 0.075),
   new THREE.MeshStandardMaterial({ map: skinTex, roughness: 0.8 }),
 );
-fist.scale.set(1.1, 0.8, 1.2);
-fist.position.y = 0.68;
-// four fingers: short capsules curving down (a plucking grip) — sized to read at arm's length
+fist.position.y = 0.7;
 const fingerMat = new THREE.MeshStandardMaterial({ map: skinTex, roughness: 0.8 });
+// knuckle line: four touching bumps riding the hand's top edge — the lower
+// half of each is buried in the block, so they read as one fused row of
+// knuckles (a clenched fist), not four separate floating pellets
 for (let i = 0; i < 4; i++) {
-  const f = new THREE.Mesh(new THREE.CapsuleGeometry(0.019, 0.062, 3, 6), fingerMat);
-  f.position.set(-0.045 + i * 0.03, 0.75, -0.055);
-  f.rotation.x = 0.85;
-  f.rotation.z = (i - 1.5) * 0.14;
-  fist.add(f);
+  const k = new THREE.Mesh(new THREE.SphereGeometry(0.0135, 8, 6), fingerMat);
+  k.position.set(-0.027 + i * 0.018, 0.032, 0.0);
+  fist.add(k);
 }
-// thumb
-const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.02, 0.054, 3, 6), fingerMat);
-thumb.position.set(-0.072, 0.725, -0.014);
-thumb.rotation.z = 1.15;
-thumb.rotation.x = 0.5;
+// thumb: base buried in the hand's body side, wrapping forward-and-down
+const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.015, 0.042, 3, 6), fingerMat);
+thumb.position.set(0.042, 0.004, 0.012);
+thumb.rotation.z = -0.5;
+thumb.rotation.x = -0.4;
 fist.add(thumb);
-armGroup.add(forearm, cuff, fist);
+// wrist: bare skin between the cuff and the hand (no gap at the joint)
+const wrist = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.042, 0.048, 0.12, 8),
+  fingerMat,
+);
+wrist.position.y = 0.615;
+armGroup.add(forearm, cuff, wrist, fist);
 const ARM_LEN = 0.72;
 
 // elbow near the lower-left frame edge, close to the lens (foreshortened like the reference)
@@ -1601,10 +1655,61 @@ function updateArm(dt: number, t: number): void {
   if (fistT > 0) {
     fistT = Math.max(0, fistT - dt * 4);
     const sq = Math.sin(fistT * Math.PI);
-    fist.scale.set(1.1 * (1 - 0.12 * sq), 0.8 * (1 + 0.18 * sq), 1.2 * (1 - 0.12 * sq));
+    fist.scale.set(1 + 0.1 * sq, 1 - 0.08 * sq, 1 + 0.06 * sq);
   } else {
-    fist.scale.set(1.1, 0.8, 1.2);
+    fist.scale.set(1, 1, 1);
   }
+}
+
+// ---------- the legs (first-person) ----------
+// camera children sit at a FIXED angle below the camera axis (pitch never
+// moves them in-frame), so the legs are placed forward-down to land in the
+// lower frame: knee pivot ~19deg below the axis, the shin tilted forward so
+// the boot rests near the bottom edge. dark pants + chunky boots read against
+// the olive ground. the gait is driven by the same walkPhase as the arm and
+// head bob; crouching folds them under, jumping tucks the knees up.
+const legsGroup = new THREE.Group();
+camera.add(legsGroup);
+
+const pantsMat = new THREE.MeshStandardMaterial({ map: camoTex, color: 0x6f6f52, roughness: 1 });
+const bootMat = new THREE.MeshStandardMaterial({ color: 0x2e2620, roughness: 1 });
+const LEG_TILT = 0.66; // base forward tilt of the whole leg (hip rotation.x)
+const LEG_FLEX = 0.08; // base knee flex at rest
+const legs: { hip: THREE.Group; shin: THREE.Mesh }[] = [];
+for (const side of [1, -1]) {
+  // knee pivot ~19deg below the camera axis; boot lands near the bottom edge
+  const hip = new THREE.Group();
+  hip.position.set(0.13 * side, -0.20, -0.58);
+  hip.rotation.x = LEG_TILT;
+  const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.46, 8), pantsMat);
+  shin.position.y = -0.23;
+  const boot = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.09, 0.28), bootMat);
+  boot.position.set(0, -0.46, -0.06);
+  shin.add(boot);
+  hip.add(shin);
+  legsGroup.add(hip);
+  legs.push({ hip, shin });
+}
+
+function updateLegs(dt: number, onGround: boolean): void {
+  if (!onGround) {
+    // mid-air: knees up, boots tucked toward the camera
+    for (const L of legs) {
+      L.hip.rotation.x = THREE.MathUtils.damp(L.hip.rotation.x, 1.15, 12, dt);
+      L.shin.rotation.x = THREE.MathUtils.damp(L.shin.rotation.x, 1.35, 12, dt);
+    }
+    return;
+  }
+  // ground: forward-tilted base + a walk swing. one leg leads, the other
+  // trails; the knee flexes through the swing. crouching folds the limb under.
+  legs.forEach((L, i) => {
+    const ph = walkPhase + i * Math.PI;
+    const amp = 0.30 * moveAmount;
+    L.hip.rotation.x = THREE.MathUtils.damp(L.hip.rotation.x,
+      LEG_TILT + Math.sin(ph) * amp + crouchT * 0.55, 14, dt);
+    L.shin.rotation.x = THREE.MathUtils.damp(L.shin.rotation.x,
+      LEG_FLEX + (0.5 + 0.5 * Math.cos(ph)) * 0.5 * moveAmount + crouchT * 1.0, 16, dt);
+  });
 }
 
 // ---------- player ----------
@@ -1615,6 +1720,12 @@ let walkPhase = 0;
 let stepAcc = 0;
 let moveAmount = 0;
 let targetShroom: ShroomRec | null = null;
+// crouch + jump (v0.7): crouchT damps 0->1 on Ctrl, vy/grounded drive the jump
+const EYE = 1.5, CROUCH_DROP = 0.45, GRAV = 11, JUMP_V = 4.4;
+let crouchT = 0;
+let vy = 0;
+let airborneNow = false;
+const eyeH = (): number => EYE - CROUCH_DROP * crouchT;
 
 const raycaster = new THREE.Raycaster();
 raycaster.far = 2.7;
@@ -1623,7 +1734,7 @@ raycaster.far = 2.7;
 // the aim target in the same tick, so a test that aims then reads state() never
 // races the next requestAnimationFrame.
 function syncCameraAndTarget(): void {
-  camera.position.set(player.x, player.y + 1.5, player.z);
+  camera.position.set(player.x, player.y + eyeH(), player.z);
   camera.rotation.set(0, 0, 0);
   camera.rotateY(player.yaw);
   camera.rotateX(player.pitch);
@@ -1995,21 +2106,27 @@ function updateMove(dt: number): void {
   if (keys.has('KeyD') || keys.has('ArrowRight')) dir.add(right);
   if (keys.has('KeyA') || keys.has('ArrowLeft')) dir.sub(right);
   if (joyX !== 0 || joyY !== 0) { dir.addScaledVector(fwd, -joyY); dir.addScaledVector(right, joyX); }
-  const moving = dir.lengthSq() > 0;
+  const wantCrouch = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC');
+  crouchT = THREE.MathUtils.damp(crouchT, wantCrouch ? 1 : 0, 14, dt);
+  const grounded = player.y - (groundH(player.x, player.z) + (onBoard(player.x, player.z) ? boardTop : 0)) <= 0.02 && vy <= 0.0001;
+  const moving = dir.lengthSq() > 0 && grounded;
   moveAmount = THREE.MathUtils.damp(moveAmount, moving ? 1 : 0, 8, dt);
   if (moving) {
     dir.normalize();
-    const speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? RUN : WALK;
+    const crouchMul = 1 - 0.55 * crouchT;
+    const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight') ? RUN : WALK) * crouchMul;
     let nx = player.x + dir.x * speed * dt;
     let nz = player.z + dir.z * speed * dt;
-    // collision: push out of circles
-    for (const o of obstacles) {
-      const dx = nx - o.x, dz = nz - o.z;
-      const d = Math.hypot(dx, dz);
-      const min = o.r + 0.26;
-      if (d < min && d > 0.0001) {
-        nx = o.x + (dx / d) * min;
-        nz = o.z + (dz / d) * min;
+    // collision: push out of circles (skipped while airborne — you clear low stuff)
+    if (grounded) {
+      for (const o of obstacles) {
+        const dx = nx - o.x, dz = nz - o.z;
+        const d = Math.hypot(dx, dz);
+        const min = o.r + 0.26;
+        if (d < min && d > 0.0001) {
+          nx = o.x + (dx / d) * min;
+          nz = o.z + (dz / d) * min;
+        }
       }
     }
     nx = Math.max(-46, Math.min(46, nx));
@@ -2023,12 +2140,31 @@ function updateMove(dt: number): void {
       SFX.footstep(onB ? 0.5 : 1);
       if (onB && Math.random() < 0.12) SFX.creak();
     }
-    walkPhase += (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 11 : 8) * dt;
+    walkPhase += (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 11 : 8) * dt * crouchMul;
     player.x = nx;
     player.z = nz;
   }
+  // vertical: terrain (or boardwalk) is the floor; Space launches when planted
   const gy = groundH(player.x, player.z) + (onBoard(player.x, player.z) ? boardTop : 0);
-  player.y = THREE.MathUtils.damp(player.y, gy, 10, dt);
+  const onGround = player.y - gy <= 0.02 && vy <= 0.0001;
+  airborneNow = !onGround;
+  if (onGround) {
+    player.y = THREE.MathUtils.damp(player.y, gy, 10, dt);
+    if (Math.abs(player.y - gy) < 0.004) player.y = gy;
+    vy = 0;
+    if (keys.has('Space')) vy = JUMP_V;
+  } else {
+    vy -= GRAV * dt;
+    player.y += vy * dt;
+    if (player.y <= gy) {
+      player.y = gy;
+      const impact = -vy;
+      vy = 0;
+      if (impact > 1.6) SFX.thud();
+    }
+  }
+  // first-person legs: knee-bent gait, tucked when crouched, folded mid-air
+  updateLegs(dt, onGround);
 }
 
 // ---------- main loop ----------
@@ -2133,12 +2269,12 @@ function animate(): void {
     // head bob
     const bobY = Math.sin(walkPhase * 2) * 0.024 * moveAmount;
     const bobX = Math.cos(walkPhase) * 0.014 * moveAmount;
-    camera.position.set(player.x + bobX * Math.cos(player.yaw), player.y + 1.5 + bobY, player.z);
+    camera.position.set(player.x + bobX * Math.cos(player.yaw), player.y + eyeH() + bobY, player.z);
     camera.rotation.set(0, 0, 0);
     camera.rotateY(player.yaw + Math.sin(walkPhase) * 0.004 * moveAmount);
     camera.rotateX(player.pitch);
   } else if (G.mode === 'pause' || G.mode === 'end') {
-    camera.position.set(player.x, player.y + 1.5, player.z);
+    camera.position.set(player.x, player.y + eyeH(), player.z);
     camera.rotation.set(0, 0, 0);
     camera.rotateY(player.yaw);
     camera.rotateX(player.pitch * 0.5 - 0.1);
