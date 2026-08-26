@@ -19,3 +19,5 @@ Thumbs.db
 cap-test.mjs
 probe-*.mjs
 __pycache__/
+memory-check.mjs
+stub-shot.mjs

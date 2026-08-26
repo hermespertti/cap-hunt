@@ -14,6 +14,7 @@ const G = {
   badPicks: 0,
   basket: {} as Record<string, number>,
   goldenFound: 0,
+  forestCaps: 0, // cuts this run leaves in the woods (the forest keeps them)
   started: false,
   targetName: '',
 };
@@ -21,6 +22,7 @@ const G = {
   state: () => ({
     mode: G.mode, weight: G.weight, timeLeft: Math.max(0, Math.round(G.timeLeft)),
     picks: G.picks, badPicks: G.badPicks, goldenFound: G.goldenFound,
+    forestCaps: G.forestCaps,
     basket: { ...G.basket }, target: G.targetName, x: player.x, z: player.z,
     y: player.y, yaw: player.yaw, pitch: player.pitch,
   }),
@@ -93,6 +95,7 @@ const G = {
       trees: { total: trees.length, byKind },
       treeList: trees.map((t) => ({ x: t.x, z: t.z, kind: t.kind, r: t.r })),
       shrooms: { total: shrooms.length, bySp },
+      stubs: stubs.length,
       elevation: { min: mn, max: mx, span: mx - mn, spawn: groundH(0, 22), north: groundH(0, -22) },
     };
   },
@@ -101,10 +104,12 @@ const G = {
     for (const t of trees) { const d = Math.hypot(t.x - x, t.z - z); if (d < bd) { bd = d; kind = t.kind; } }
     return { kind, d: bd };
   },
-  save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen }, deadlyMistakes: saved.deadlyMistakes, bestPerSeed: { ...saved.bestPerSeed } }),
-  clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false }, deadlyMistakes: 0, bestPerSeed: {} }; saveSave(); renderCodex(); },
+  save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen }, deadlyMistakes: saved.deadlyMistakes, bestPerSeed: { ...saved.bestPerSeed }, harvested: { ...saved.harvested }, forestCaps: { ...saved.forestCaps }, lastSeen: saved.lastSeen }),
+  clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false }, deadlyMistakes: 0, bestPerSeed: {}, harvested: {}, forestCaps: {}, lastSeen: 0 }; saveSave(); renderCodex(); },
   seed: () => forestSeed,
   newWoods: () => newWoods(),
+  stubs: () => stubs.map((s) => ({ sp: s.sp, x: s.x, z: s.z })),
+  shiftTime: (ms: number) => { debugNow = (debugNow ?? Date.now()) + ms; checkRegrowth(10); },
   texDataUrl: () => (window as any).__capCamo.toDataURL('image/png'),
 };
 
@@ -699,6 +704,49 @@ const SPECIES: Record<Species, SpeciesDef> = {
   gold: { name: 'The Golden Cap', val: 25, capR: 0.12, capCol: '#ffcf3d', stemCol: '#e8c86a', gold: true, host: 'in the shade of old growth' },
 };
 
+// ---------- field notes + persistence ----------
+interface SaveData { bestWeight: number; seen: Record<Species, boolean>; deadlyMistakes: number; bestPerSeed: Record<string, number>; harvested: Record<string, number>; forestCaps: Record<string, number>; lastSeen: number; }
+const SAVE_KEY = 'caphunt_save_v1';
+function loadSave(): SaveData {
+  const empty: SaveData = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false }, deadlyMistakes: 0, bestPerSeed: {}, harvested: {}, forestCaps: {}, lastSeen: 0 };
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return empty;
+    const p = JSON.parse(raw) as Partial<SaveData>;
+    const harvested: Record<string, number> = {};
+    if (p.harvested && typeof p.harvested === 'object') {
+      for (const [k, v] of Object.entries(p.harvested)) if (typeof v === 'number' && Number.isFinite(v)) harvested[k] = v;
+    }
+    return {
+      bestWeight: typeof p.bestWeight === 'number' ? p.bestWeight : 0,
+      seen: { ...empty.seen, ...(p.seen ?? {}) },
+      deadlyMistakes: typeof p.deadlyMistakes === 'number' ? p.deadlyMistakes : 0,
+      bestPerSeed: (p.bestPerSeed ?? {}) as Record<string, number>,
+      harvested,
+      forestCaps: (p.forestCaps ?? {}) as Record<string, number>,
+      lastSeen: typeof p.lastSeen === 'number' ? p.lastSeen : 0,
+    };
+  } catch { return empty; }
+}
+let saved = loadSave();
+function saveSave(): void {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(saved)); } catch { /* private mode */ }
+}
+
+// ---------- the forest remembers ----------
+// every cap you cut leaves a stub where it grew. the stub stands until the
+// species' regrow window passes in real time — the woods recover while you're
+// away, and the ledger (keyed by seed + spot) is what makes "your forest" one
+// that changes because of you. slow species come back slow: the golden cap
+// keeps a two-hour pilgrimage.
+const REGROW_MS: Record<Species, number> = {
+  champ: 15 * 60e3, fly: 20 * 60e3, deadly: 20 * 60e3,
+  chant: 30 * 60e3, trump: 30 * 60e3, gold: 120 * 60e3,
+};
+function stubKey(sp: Species, x: number, z: number): string { return `${sp}:${x.toFixed(3)}:${z.toFixed(3)}`; }
+let debugNow: number | null = null; // tests shift the clock; the forest obeys
+const nowMs = (): number => debugNow ?? Date.now();
+
 function capTexture(s: SpeciesDef, sp: Species): THREE.CanvasTexture | null {
   if (sp === 'fly') {
     return canvasTex(128, 128, (x) => {
@@ -777,6 +825,11 @@ function makeMushroom(sp: Species, x: number, y: number, z: number): THREE.Group
   const def = SPECIES[sp];
   const g = new THREE.Group();
   const s = rnd(0.8, 1.3);
+  g.userData.sp = sp;
+  g.userData.phase = rnd(0, 6.3);
+  g.rotation.y = rnd(0, 6.3);
+  g.rotation.z = rnd(-0.08, 0.08);
+  g.scale.setScalar(s);
   const stemH = sp === 'trump' ? 0.2 : 0.14;
   const stemGeo = sp === 'trump'
     ? new THREE.CylinderGeometry(0.028, 0.055, stemH, 8)
@@ -818,13 +871,115 @@ function makeMushroom(sp: Species, x: number, y: number, z: number): THREE.Group
   }
   g.add(cap);
   g.position.set(x, y, z);
-  g.rotation.y = rnd(0, 6.3);
-  g.rotation.z = rnd(-0.08, 0.08);
-  g.userData.sp = sp;
-  g.userData.phase = rnd(0, 6.3);
   shrooms.push(g);
   for (const m of g.children) pickMeshes.push(m);
   return g;
+}
+
+// ---------- the forest's memory ----------
+// a stub stands where a cap was cut: a pale stump, a bright cut face, and a
+// faint spore ring so the mark reads across the floor even at dusk. stubs are
+// not pickable — the spot is empty until the species regrows.
+const stubs: { g: THREE.Group; sp: Species; x: number; y: number; z: number; key: string }[] = [];
+function makeStub(sp: Species, x: number, y: number, z: number): THREE.Group {
+  const g = new THREE.Group();
+  const h = sp === 'trump' ? 0.07 : 0.05;
+  const r = sp === 'trump' ? 0.03 : 0.036;
+  const stump = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.92, r, h, 7),
+    new THREE.MeshStandardMaterial({ color: '#cdc5b4', roughness: 1 }));
+  stump.position.y = h / 2;
+  g.add(stump);
+  const cut = new THREE.Mesh(new THREE.CircleGeometry(r * 0.9, 7),
+    new THREE.MeshStandardMaterial({ color: '#efe8d6', roughness: 1 }));
+  cut.rotation.x = -Math.PI / 2;
+  cut.position.y = h + 0.001;
+  g.add(cut);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.09, 0.13, 16),
+    new THREE.MeshBasicMaterial({ color: 0xd8d2c0, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.012;
+  g.add(ring);
+  g.position.set(x, y, z);
+  return g;
+}
+// every cap you cut leaves a stub where it grew. the stub stands until the
+// species' regrow window passes in real time — the woods recover while you're
+// away, and the ledger (keyed by seed + spot) is what makes "your forest" one
+// that changes because of you. slow species come back slow: the golden cap
+// keeps a two-hour pilgrimage.
+// plant() builds the real cap first so the seeded stream consumes identically
+// whether the spot regrows or stands as a stub — the layout never shifts.
+function plant(sp: Species, x: number, y: number, z: number): THREE.Group {
+  const g = makeMushroom(sp, x, y, z);
+  const k = stubKey(sp, x, z);
+  const t = saved.harvested[k];
+  if (t === undefined || nowMs() - t >= REGROW_MS[sp]) return g;
+  // the woods still remember this cut — swap the cap for its stub
+  world.remove(g);
+  for (const m of [...g.children]) {
+    const pi = pickMeshes.indexOf(m);
+    if (pi >= 0) pickMeshes.splice(pi, 1);
+  }
+  const si = shrooms.indexOf(g);
+  if (si >= 0) shrooms.splice(si, 1);
+  const gi = goldCaps.indexOf(g);
+  if (gi >= 0) goldCaps.splice(gi, 1);
+  g.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.geometry) m.geometry.dispose();
+    const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+    if (mat) {
+      const list = Array.isArray(mat) ? mat : [mat];
+      for (const mm of list) {
+        const map = (mm as THREE.MeshStandardMaterial).map;
+        if (map) map.dispose();
+        mm.dispose();
+      }
+    }
+  });
+  const sg = makeStub(sp, x, y, z);
+  world.add(sg);
+  stubs.push({ g: sg, sp, x, y, z, key: k });
+  return sg;
+}
+let regrowAcc = 0;
+// a regrown cap must look the same no matter WHEN it regrows — pose is a pure
+// function of seed + spot (a side mulberry32 stream), so it never disturbs
+// the world's seeded stream and reload snapshots stay byte-identical
+function regrowPose(key: string): { s: number; ry: number; rz: number; ph: number } {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const r = mulberry32(h ^ 0x9e3779b9);
+  return { s: 0.8 + r() * 0.5, ry: r() * 6.3, rz: r() * 0.16 - 0.08, ph: r() * 6.3 };
+}
+function checkRegrowth(dt: number): void {
+  regrowAcc += dt;
+  if (regrowAcc < 1) return;
+  regrowAcc = 0;
+  const now = nowMs();
+  for (let i = stubs.length - 1; i >= 0; i--) {
+    const s = stubs[i];
+    const t = saved.harvested[s.key];
+    if (t !== undefined && now - t < REGROW_MS[s.sp]) continue;
+    world.remove(s.g);
+    s.g.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+      if (mat) (Array.isArray(mat) ? mat : [mat]).forEach((mm) => mm.dispose());
+    });
+    stubs.splice(i, 1);
+    delete saved.harvested[s.key];
+    // the spot regrows with a fresh cap: same species, same spot, fixed pose
+    const g = makeMushroom(s.sp, s.x, s.y, s.z);
+    const p = regrowPose(`${forestSeed}|${s.key}`);
+    g.scale.setScalar(p.s);
+    g.rotation.y = p.ry;
+    g.rotation.z = p.rz;
+    g.userData.phase = p.ph;
+    world.add(g);
+    saveSave();
+  }
 }
 
 // bushes: leafy card clusters with berries, scattered across the forest floor
@@ -887,7 +1042,7 @@ for (let bi = 0; bi < bushSpots.length; bi++) {
   for (let i = 0; i < count; i++) {
     const ang = rnd(0, 6.3), rad = rnd(0.25, 1.1);
     const mx = bs.x + Math.cos(ang) * rad, mz = bs.z + Math.sin(ang) * rad;
-    world.add(makeMushroom('champ', mx, groundH(mx, mz), mz));
+    world.add(plant('champ', mx, groundH(mx, mz), mz));
   }
 }
 
@@ -917,7 +1072,7 @@ for (const tr of trees) {
     for (let i = 0; i < n; i++) {
       const ang = rnd(0, 6.3), rad = tr.r + rnd(0.25, 0.85); // close enough that the host is the nearest trunk
       const mx = tr.x + Math.cos(ang) * rad, mz = tr.z + Math.sin(ang) * rad;
-      world.add(makeMushroom(sp, mx, groundH(mx, mz), mz));
+      world.add(plant(sp, mx, groundH(mx, mz), mz));
     }
   }
 }
@@ -927,11 +1082,11 @@ for (let i = 0; i < 28; i++) {
   const x = rnd(-45, 45), z = rnd(-45, 45);
   let clear = true;
   for (const t of trees) if (Math.hypot(t.x - x, t.z - z) < 2.2) { clear = false; break; }
-  if (clear) world.add(makeMushroom('champ', x, groundH(x, z), z));
+  if (clear) world.add(plant('champ', x, groundH(x, z), z));
 }
 // guarantee a discoverable population of every species (field notes wants them all)
 {
-  const plantAt = (sp: Species, x: number, z: number) => world.add(makeMushroom(sp, x, groundH(x, z), z));
+  const plantAt = (sp: Species, x: number, z: number) => world.add(plant(sp, x, groundH(x, z), z));
   const underKind = (kinds: TreeKind[]): [number, number] => {
     const pool = trees.filter((t) => kinds.includes(t.kind));
     const t = pool[(srnd() * pool.length) | 0];
@@ -972,10 +1127,22 @@ for (let i = 0; i < 28; i++) {
         const ang = rnd(0, 6.3), rad = host.r + rnd(0.3, 0.9);
         mx = host.x + Math.cos(ang) * rad; mz = host.z + Math.sin(ang) * rad;
       } else { mx = rnd(-38, 38); mz = rnd(-38, 38); }
-      world.add(makeMushroom('gold', mx, groundH(mx, mz), mz));
+      world.add(plant('gold', mx, groundH(mx, mz), mz));
       golds++;
     }
   }
+}
+// the ledger keeps only cuts that have not fully regrown (bounds the save,
+// and clears a spot for its next life)
+{
+  const now = nowMs();
+  let dirty = false;
+  for (const [k, t] of Object.entries(saved.harvested)) {
+    const sp = k.split(':')[0];
+    const win = (REGROW_MS as Record<string, number>)[sp] ?? REGROW_MS.champ;
+    if (now - t >= win) { delete saved.harvested[k]; dirty = true; }
+  }
+  if (dirty) saveSave();
 }
 
 // pluck juice: cap flights into the fist, drifting spore motes, ground ring,
@@ -1158,27 +1325,7 @@ function updateTarget(): void {
   } else targetRing.visible = false;
 }
 
-// ---------- field notes + persistence ----------
-interface SaveData { bestWeight: number; seen: Record<Species, boolean>; deadlyMistakes: number; bestPerSeed: Record<string, number>; }
-const SAVE_KEY = 'caphunt_save_v1';
-function loadSave(): SaveData {
-  const empty: SaveData = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false }, deadlyMistakes: 0, bestPerSeed: {} };
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return empty;
-    const p = JSON.parse(raw) as Partial<SaveData>;
-    return {
-      bestWeight: typeof p.bestWeight === 'number' ? p.bestWeight : 0,
-      seen: { ...empty.seen, ...(p.seen ?? {}) },
-      deadlyMistakes: typeof p.deadlyMistakes === 'number' ? p.deadlyMistakes : 0,
-      bestPerSeed: (p.bestPerSeed ?? {}) as Record<string, number>,
-    };
-  } catch { return empty; }
-}
-let saved = loadSave();
-function saveSave(): void {
-  try { localStorage.setItem(SAVE_KEY, JSON.stringify(saved)); } catch { /* private mode */ }
-}
+// (persistence + the forest's memory ledger live with the species table up top)
 
 // ---------- picking ----------
 const floatsEl = document.getElementById('floats')!;
@@ -1214,6 +1361,19 @@ function doPickAction(): void {
   if (idx >= 0) pickMeshes.splice(idx, 1);
   const si = shrooms.indexOf(g);
   if (si >= 0) shrooms.splice(si, 1);
+  if (sp === 'gold') {
+    const gi = goldCaps.indexOf(g);
+    if (gi >= 0) goldCaps.splice(gi, 1); // the bell must not keep ringing from a picked cap
+  }
+  // the forest remembers the cut: a stub stands where the cap was
+  {
+    const k = stubKey(sp, g.position.x, g.position.z);
+    saved.harvested[k] = nowMs();
+    const sg = makeStub(sp, g.position.x, g.position.y, g.position.z);
+    world.add(sg);
+    stubs.push({ g: sg, sp, x: g.position.x, y: g.position.y, z: g.position.z, key: k });
+    saveSave();
+  }
   flights.push({ g, from: g.position.clone(), t: 0, dur: 0.22 });
   // ground ring + spore motes where the cap was
   ringT = 0;
@@ -1223,6 +1383,8 @@ function doPickAction(): void {
   SFX.thud();
   if (def.gold) freezeS = 0.06; // half a heartbeat
   G.picks++;
+  G.forestCaps++;
+  saved.forestCaps[String(forestSeed)] = (saved.forestCaps[String(forestSeed)] ?? 0) + 1;
   G.basket[def.name] = (G.basket[def.name] ?? 0) + 1;
   G.weight = Math.max(0, G.weight + def.val);
   if (def.gold) G.goldenFound++;
@@ -1302,6 +1464,7 @@ function endGame(): void {
   document.getElementById('endStats')!.innerHTML = `
     <div class="endStat"><div class="v">${Math.floor(timeUsed)}s</div><div class="l">time in the woods</div></div>
     <div class="endStat"><div class="v">${G.picks}</div><div class="l">caps picked</div></div>
+    <div class="endStat"><div class="v">${G.forestCaps}</div><div class="l">stubs the forest will keep</div></div>
     <div class="endStat"><div class="v">${G.badPicks}</div><div class="l">deadlies</div></div>
     <div class="endStat"><div class="v">${G.goldenFound}/4</div><div class="l">golden caps</div></div>
     <div class="endStat"><div class="v">${saved.bestWeight}g</div><div class="l">${newBest ? '★ new best basket' : 'best basket'}</div></div>` +
@@ -1337,6 +1500,13 @@ function renderCodex(): void {
   }).join('');
   const bestEl = document.getElementById('titleBest');
   if (bestEl) bestEl.textContent = saved.bestWeight > 0 ? `BEST BASKET  ${saved.bestWeight}g` : '';
+  // the forest keeps your marks: every cut in these woods is counted, and the
+  // stubs stand until the caps grow back on the real-time clock
+  const memEl = document.getElementById('titleMemory');
+  if (memEl) {
+    const n = saved.forestCaps[String(forestSeed)] ?? 0;
+    memEl.textContent = n > 0 ? `THE FOREST REMEMBERS — YOU HAVE CUT ${n} CAP${n > 1 ? 'S' : ''} HERE, AND THE STUBS ARE STILL GROWING BACK` : '';
+  }
 }
 renderCodex();
 
@@ -1344,6 +1514,8 @@ function startGame(): void {
   if (G.started) return;
   G.started = true;
   G.mode = 'play';
+  saved.lastSeen = nowMs();
+  saveSave();
   titleEl.style.display = 'none';
   document.body.classList.remove('menu');
   SFX.gong();
@@ -1561,6 +1733,10 @@ function animate(): void {
     if (Math.abs(shownWeight - G.weight) < 0.6) shownWeight = G.weight;
     hudWeight.textContent = `${Math.round(shownWeight)}g`;
   }
+
+  // the woods regrow on the real-time clock, in every mode — the title dolly
+  // is "coming back", and what has grown back should be there when you look
+  checkRegrowth(rawDt);
 
   if (G.mode === 'title') {
     // slow cinematic dolly toward the thicket, arm reaching

@@ -133,6 +133,43 @@ await page.evaluate(() => window.__cap.skipTime(150));
 await new Promise(r => setTimeout(r, 900));
 ok('end screen shows the per-woods ghost bar', (await page.$('#endGhost .glabel')) !== null);
 
+// 8. v0.5 the forest remembers: picks leave stubs that survive reload and
+//    regrow on the real-time clock
+await page.evaluate(() => window.__cap.clearSave());
+await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+await new Promise(r => setTimeout(r, 3000));
+await page.click('#startBtn');
+await new Promise(r => setTimeout(r, 700));
+const mSpot = await page.evaluate(() => {
+  const st = window.__cap.state();
+  const info = window.__cap.info();
+  const all = [];
+  for (const [sp, arr] of Object.entries(info.shrooms.bySp)) for (const p of arr) all.push({ ...p, sp });
+  let best = null, bd = 1e9;
+  for (const c of all) { const d = Math.hypot(c.x - st.x, c.z - st.z); if (d < bd) { bd = d; best = c; } }
+  if (!best) return null;
+  window.__cap.teleport(best.x, best.z + 1.3);
+  window.__cap.aimAt(best.x, best.z);
+  return best;
+});
+if (mSpot) {
+  await new Promise(r => setTimeout(r, 60));
+  await page.evaluate(() => window.__cap.click());
+  await new Promise(r => setTimeout(r, 400));
+  const led = await page.evaluate(() => window.__cap.save());
+  ok('pick leaves a stub + ledger entry', (await page.evaluate(() => window.__cap.info().stubs)) === 1 && Object.keys(led.harvested).length === 1);
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+  await new Promise(r => setTimeout(r, 3000));
+  ok('stub survives reload (forest memory)', (await page.evaluate(() => window.__cap.info().stubs)) === 1);
+  ok('title shows the forest memory line', /CUT \d+ CAP/.test(await page.evaluate(() => document.getElementById('titleMemory').textContent)));
+  await page.evaluate((sp) => {
+    const win = { champ: 15, fly: 20, deadly: 20, chant: 30, trump: 30, gold: 120 }[sp] * 60e3;
+    window.__cap.shiftTime(win + 5000);
+  }, mSpot.sp);
+  await new Promise(r => setTimeout(r, 400));
+  ok('cap regrows after its real-time window', (await page.evaluate(() => window.__cap.info().stubs)) === 0);
+}
+
 const pageErrs = errors.filter(e => !/favicon/i.test(e));
 ok('no page errors', pageErrs.length === 0, pageErrs.slice(0, 3).join(' | '));
 

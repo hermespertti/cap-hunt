@@ -51,6 +51,7 @@
   .btnlink{margin-top:14px;pointer-events:auto;cursor:pointer;background:none;border:none;color:#b8b2a0;font-size:12px;letter-spacing:1px;text-decoration:underline;text-underline-offset:3px;transition:color .15s;-webkit-tap-highlight-color:transparent;}
   .btnlink:hover{color:#f4efe2;}
   .best{margin-top:18px;font-size:12px;letter-spacing:2px;font-weight:800;color:#ffd23f;text-shadow:0 2px 8px rgba(0,0,0,.5);}
+  .memory{margin-top:8px;font-size:11px;letter-spacing:1.2px;font-weight:700;color:#9ab87a;text-shadow:0 2px 8px rgba(0,0,0,.5);}
   .codexWrap{margin-top:14px;max-width:640px;width:92vw;}
   .codexHead{font-size:10px;letter-spacing:4px;font-weight:800;color:#9ab87a;margin-bottom:6px;}
   .codex{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;}
@@ -74,6 +75,7 @@
     .btn{margin-top:16px;padding:12px 36px;font-size:16px;}
     .btnlink{margin-top:8px;}
     .best{margin-top:10px;}
+    .memory{margin-top:6px;}
     .codexWrap{margin-top:8px;}
     .codex{gap:5px;}
     .citem{padding:3px 8px;font-size:10px;}
@@ -123,14 +125,16 @@
   <div class="tag">Overcast woods, moss underfoot, an old boardwalk you're not allowed on.
   Fill your basket with <b>100 grams</b> of mushrooms before the light fails.
   Some caps feed you. One cap feeds your legend. One cap is a white lie.
-  And this forest is <b>yours</b> — it grows the same way every time you come back.</div>
+  And this forest is <b>yours</b> — it remembers every cap you take.</div>
   <div class="rules">
     <div class="rule"><b>Pick</b>Aim at a mushroom, click. Your hand reaches in for you.</div>
     <div class="rule"><b>Beware</b>The Deadly White looks respectable. That's the trick.</div>
     <div class="rule"><b>Find</b>Four golden caps are hidden in the thicket. Worth real grams.</div>
+    <div class="rule"><b>Return</b>Cut a cap, a stub stays. Come back later — it grows back in its own time.</div>
     <div class="rule"><b>Light</b>2:30 of daylight. After that the forest closes.</div>
   </div>
   <div id="titleBest" class="best"></div>
+  <div id="titleMemory" class="memory"></div>
   <div class="codexWrap"><div class="codexHead">FIELD NOTES</div><div id="codex" class="codex"></div></div>
   <button class="btn" id="startBtn">Step into the woods</button>
   <button class="btnlink" id="newWoodsBtn">…or walk into new woods</button>
