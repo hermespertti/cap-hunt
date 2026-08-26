@@ -187,6 +187,17 @@ await new Promise(r => setTimeout(r, 700));
   await new Promise(r => setTimeout(r, 900));
   ok('crouch lowers the eye (v0.7)', (await page.evaluate(() => window.__cap.state())).crouch > 0.9);
   await page.evaluate(() => window.__cap.keys('ControlLeft', false));
+  await new Promise(r => setTimeout(r, 900));
+  ok('release crouch stands up (v0.7.1)', (await page.evaluate(() => window.__cap.state())).crouch < 0.1);
+}
+{
+  // leg viewmodel must fade with pitch: no legs at the horizon, legs when looking down
+  await page.evaluate(() => window.__cap.aim(window.__cap.state().yaw, 0));
+  await new Promise(r => setTimeout(r, 300));
+  ok('legs hidden looking ahead (v0.7.1)', (await page.evaluate(() => window.__cap.state())).legs < 0.05);
+  await page.evaluate(() => window.__cap.aim(window.__cap.state().yaw, -1.1));
+  await new Promise(r => setTimeout(r, 300));
+  ok('legs visible looking down (v0.7.1)', (await page.evaluate(() => window.__cap.state())).legs > 0.9);
 }
 
 // 10. v0.6 perf guard: instanced rendering must keep the scene lean —

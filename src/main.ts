@@ -30,7 +30,7 @@ let _frameT0 = 0;
     forestCaps: G.forestCaps,
     basket: { ...G.basket }, target: G.targetName, x: player.x, z: player.z,
     y: player.y, yaw: player.yaw, pitch: player.pitch,
-    crouch: crouchT, vy, airborne: airborneNow,
+    crouch: crouchT, vy, airborne: airborneNow, legs: +legAlpha.toFixed(3),
   }),
   keys: (k: string, down: boolean) => {
     if (down) keys.add(k); else keys.delete(k);
@@ -1523,6 +1523,7 @@ allocateInstances();
 // a fist that clenches, a HUD weight that ticks, and a half-heartbeat freeze on gold
 const moteGeo = new THREE.SphereGeometry(0.014, 5, 4);
 const flights: { g: THREE.Group; from: THREE.Vector3; t: number; dur: number }[] = [];
+const _flightEnd = new THREE.Vector3();
 const motes: { m: THREE.Mesh; v: THREE.Vector3; t: number; dur: number }[] = [];
 let fistT = 0;
 let freezeS = 0;
@@ -1629,17 +1630,19 @@ function updateArm(dt: number, t: number): void {
   const rest = handRest.clone();
   rest.y += bobY;
   rest.x += Math.cos(t * 0.5) * 0.006;
-  const desired = target ? target : rest;
-  // convert to camera space, clamp reach so the arm keeps its shape (no staff-like stretch)
-  const camSpaceTarget = desired.clone();
-  camera.worldToLocal(camSpaceTarget);
+  // rest is ALREADY camera space; only the target needs the world->camera
+  // transform. (the old code ran both through worldToLocal, which pinned the
+  // rest pose to a fixed WORLD direction — the hand kept pointing the same
+  // way no matter which way you turned)
+  const camSpaceTarget = target ? camera.worldToLocal(target.clone()) : rest;
   const fromElbow = camSpaceTarget.clone().sub(elbowCam);
   const MAX_REACH = 1.15;
   if (fromElbow.length() > MAX_REACH) fromElbow.setLength(MAX_REACH);
   const clamped = elbowCam.clone().add(fromElbow);
   if (punchT > 0 && armPunchTarget) {
     punchT = Math.max(0, punchT - dt * 3.5);
-    const dir = armPunchTarget.clone().sub(elbowCam).normalize();
+    const punchCam = camera.worldToLocal(armPunchTarget.clone());
+    const dir = punchCam.sub(elbowCam).normalize();
     clamped.add(dir.multiplyScalar(Math.sin(punchT * Math.PI) * 0.12));
   }
   handWorld.lerp(clamped, 1 - Math.pow(0.0001, dt));
@@ -1671,10 +1674,16 @@ function updateArm(dt: number, t: number): void {
 const legsGroup = new THREE.Group();
 camera.add(legsGroup);
 
-const pantsMat = new THREE.MeshStandardMaterial({ map: camoTex, color: 0x6f6f52, roughness: 1 });
-const bootMat = new THREE.MeshStandardMaterial({ color: 0x2e2620, roughness: 1 });
-const LEG_TILT = 0.66; // base forward tilt of the whole leg (hip rotation.x)
-const LEG_FLEX = 0.08; // base knee flex at rest
+const pantsMat = new THREE.MeshStandardMaterial({ map: camoTex, color: 0x6f6f52, roughness: 1, transparent: true, opacity: 0 });
+const bootMat = new THREE.MeshStandardMaterial({ color: 0x2e2620, roughness: 1, transparent: true, opacity: 0 });
+// base forward lean of the whole leg (hip rotation.x, + swings it forward)
+const LEG_TILT = 0.66;
+// base KNEE flex at rest (shin rotation.x). NEGATIVE pulls the boot back and
+// up — a real knee folds backward, never kicks the boot forward. small, so
+// the boot rests right at the frame's bottom edge and steps in/out on the gait
+const LEG_FLEX = -0.05;
+const legMats = [pantsMat, bootMat];
+let legAlpha = 0; // pitch-driven viewmodel fade (see animate loop)
 const legs: { hip: THREE.Group; shin: THREE.Mesh }[] = [];
 for (const side of [1, -1]) {
   // knee pivot ~19deg below the camera axis; boot lands near the bottom edge
@@ -1693,22 +1702,25 @@ for (const side of [1, -1]) {
 
 function updateLegs(dt: number, onGround: boolean): void {
   if (!onGround) {
-    // mid-air: knees up, boots tucked toward the camera
+    // mid-air tuck: the thigh drives forward, the KNEE folds hard backward
+    // (negative) so the boot comes up toward the body. a positive shin
+    // rotation would kick the boot forward-down — the opposite of a tuck.
     for (const L of legs) {
-      L.hip.rotation.x = THREE.MathUtils.damp(L.hip.rotation.x, 1.15, 12, dt);
-      L.shin.rotation.x = THREE.MathUtils.damp(L.shin.rotation.x, 1.35, 12, dt);
+      L.hip.rotation.x = THREE.MathUtils.damp(L.hip.rotation.x, 1.25, 12, dt);
+      L.shin.rotation.x = THREE.MathUtils.damp(L.shin.rotation.x, -1.9, 12, dt);
     }
     return;
   }
-  // ground: forward-tilted base + a walk swing. one leg leads, the other
-  // trails; the knee flexes through the swing. crouching folds the limb under.
+  // ground: forward lean + a walk swing. the knee flexes backward (negative)
+  // through the swing, and CROUCH FOLDS THE KNEE UNDER — the thigh eases back
+  // and the shin wraps hard backward, so the boot tucks down-under, not out front
   legs.forEach((L, i) => {
     const ph = walkPhase + i * Math.PI;
     const amp = 0.30 * moveAmount;
     L.hip.rotation.x = THREE.MathUtils.damp(L.hip.rotation.x,
-      LEG_TILT + Math.sin(ph) * amp + crouchT * 0.55, 14, dt);
+      LEG_TILT + Math.sin(ph) * amp - crouchT * 0.15, 14, dt);
     L.shin.rotation.x = THREE.MathUtils.damp(L.shin.rotation.x,
-      LEG_FLEX + (0.5 + 0.5 * Math.cos(ph)) * 0.5 * moveAmount + crouchT * 1.0, 16, dt);
+      LEG_FLEX - (0.5 + 0.5 * Math.cos(ph)) * 0.5 * moveAmount - crouchT * 1.2, 16, dt);
   });
 }
 
@@ -2189,7 +2201,10 @@ function animate(): void {
       flights.splice(i, 1);
       continue;
     }
-    f.g.position.lerpVectors(f.from, handWorld, f.t);
+    // endpoint = the fist's real WORLD position. (handWorld is camera-space
+    // — fine for the arm, wrong for a world-space flight group)
+    fist.getWorldPosition(_flightEnd);
+    f.g.position.lerpVectors(f.from, _flightEnd, f.t);
     f.g.scale.setScalar(Math.max(0.15, 1 - f.t * 0.5));
   }
   for (let i = motes.length - 1; i >= 0; i--) {
@@ -2278,6 +2293,18 @@ function animate(): void {
     camera.rotation.set(0, 0, 0);
     camera.rotateY(player.yaw);
     camera.rotateX(player.pitch * 0.5 - 0.1);
+  }
+
+  // leg viewmodel fade: camera children sit at a FIXED angle below the axis,
+  // so the legs are only actually in-frame when looking down — fade them in
+  // over pitch -0.55..-1.0 instead of letting them float at the horizon.
+  // crouch and jump force them visible: the fold and the tuck ARE the moment.
+  {
+    const la = airborneNow || crouchT > 0.5 ? 1
+      : THREE.MathUtils.clamp((-player.pitch - 0.55) / 0.45, 0, 1);
+    legsGroup.visible = la > 0.02;
+    for (const m of legMats) m.opacity = la;
+    legAlpha = la;
   }
 
   updateTarget();
