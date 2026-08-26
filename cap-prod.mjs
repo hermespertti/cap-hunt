@@ -170,6 +170,13 @@ if (mSpot) {
   ok('cap regrows after its real-time window', (await page.evaluate(() => window.__cap.info().stubs)) === 0);
 }
 
+// 9. v0.6 perf guard: instanced rendering must keep the scene lean —
+//    2,700+ draw calls in v0.5 dropped to ~75; a regression back to
+//    per-mesh rendering would blow well past 200
+const perf = await page.evaluate(() => window.__cap.perf());
+ok('draw calls under 200 (instancing intact)', perf && perf.calls < 200, `calls=${perf && perf.calls}`);
+ok('frame time under 10ms on the 880M', perf && perf.frameMs < 10, `frameMs=${perf && perf.frameMs}`);
+
 const pageErrs = errors.filter(e => !/favicon/i.test(e));
 ok('no page errors', pageErrs.length === 0, pageErrs.slice(0, 3).join(' | '));
 

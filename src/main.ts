@@ -18,6 +18,11 @@ const G = {
   started: false,
   targetName: '',
 };
+// perf instrumentation (debug hook reads these; never touched by game logic)
+let _lastRenderMs = 0;
+const _frameSamples: number[] = [];
+let _frameT0 = 0;
+
 (window as any).__cap = {
   state: () => ({
     mode: G.mode, weight: G.weight, timeLeft: Math.max(0, Math.round(G.timeLeft)),
@@ -47,30 +52,30 @@ const G = {
     syncCameraAndTarget();
   },
   nearestShroom: () => {
-    let best: THREE.Vector3 | null = null, bd = 1e9;
+    let bx = 0, bz = 0, bd = 1e9, found = false;
     for (const g of shrooms) {
-      const d = Math.hypot(g.position.x - player.x, g.position.z - player.z);
-      if (d < bd) { bd = d; best = g.position; }
+      const d = Math.hypot(g.x - player.x, g.z - player.z);
+      if (d < bd) { bd = d; bx = g.x; bz = g.z; found = true; }
     }
-    return best ? { x: best.x, z: best.z, d: bd } : null;
+    return found ? { x: bx, z: bz, d: bd } : null;
   },
   refShot: () => {
     // deterministic reference framing: stand between the mossy log (left) and the
     // boardwalk (right), facing -z down the corridor, at the nearest mushroom ahead
     player.x = 0.4; player.z = 21.2;
     player.y = groundH(0.4, 21.2);
-    let best: THREE.Vector3 | null = null, bd = 1e9;
+    let bx = 0, bz = 0, bd = 1e9, found = false;
     for (const g of shrooms) {
-      const dz = g.position.z - player.z;
-      if (dz < 0 && dz > -4.5 && Math.abs(g.position.x - 0.4) < 4 && -dz < bd) {
-        bd = -dz; best = g.position;
+      const dz = g.z - player.z;
+      if (dz < 0 && dz > -4.5 && Math.abs(g.x - 0.4) < 4 && -dz < bd) {
+        bd = -dz; bx = g.x; bz = g.z; found = true;
       }
     }
-    if (best) {
-      player.yaw = Math.atan2(-(best.x - player.x), -(best.z - player.z));
-      const hd = Math.max(0.3, Math.hypot(best.x - player.x, best.z - player.z));
-      player.pitch = Math.max(-1.35, Math.min(1.35, Math.atan2(groundH(best.x, best.z) + 0.05 - (player.y + 1.4), hd)));
-      return { x: best.x, z: best.z, d: hd };
+    if (found) {
+      player.yaw = Math.atan2(-(bx - player.x), -(bz - player.z));
+      const hd = Math.max(0.3, Math.hypot(bx - player.x, bz - player.z));
+      player.pitch = Math.max(-1.35, Math.min(1.35, Math.atan2(groundH(bx, bz) + 0.05 - (player.y + 1.4), hd)));
+      return { x: bx, z: bz, d: hd };
     }
     player.yaw = 0; player.pitch = -0.4;
     return null;
@@ -83,8 +88,8 @@ const G = {
     for (const t of trees) byKind[t.kind] = (byKind[t.kind] ?? 0) + 1;
     const bySp: Record<string, { x: number; z: number }[]> = {};
     for (const g of shrooms) {
-      const sp = g.userData.sp as string;
-      (bySp[sp] ??= []).push({ x: g.position.x, z: g.position.z });
+      const sp = g.sp as string;
+      (bySp[sp] ??= []).push({ x: g.x, z: g.z });
     }
     let mn = 1e9, mx = -1e9;
     for (let x = -44; x <= 44; x += 4) for (let z = -44; z <= 44; z += 4) {
@@ -109,6 +114,23 @@ const G = {
   seed: () => forestSeed,
   newWoods: () => newWoods(),
   stubs: () => stubs.map((s) => ({ sp: s.sp, x: s.x, z: s.z })),
+  perf: () => ({
+    // last-frame GPU submit stats, straight from three's renderer.info
+    calls: renderer.info.render.calls,
+    triangles: renderer.info.render.triangles,
+    points: renderer.info.render.points,
+    lines: renderer.info.render.lines,
+    geometries: renderer.info.memory.geometries,
+    textures: renderer.info.memory.textures,
+    programs: (renderer.info.programs as unknown[] | undefined)?.length ?? -1,
+    // the wall-time of the most recent renderer.render() call (ms)
+    lastRenderMs: _lastRenderMs,
+    // the average per-frame wall time of the whole animate() body (ms), 120-sample window
+    frameAvgMs: _frameSamples.length ? _frameSamples.reduce((a, b) => a + b, 0) / _frameSamples.length : 0,
+    frameMinMs: _frameSamples.length ? Math.min(..._frameSamples) : 0,
+    frameMaxMs: _frameSamples.length ? Math.max(..._frameSamples) : 0,
+    sceneObjects: (() => { let m = 0; scene.traverse((o) => { if ((o as THREE.Mesh).isMesh) m++; }); return m; })(),
+  }),
   shiftTime: (ms: number) => { debugNow = (debugNow ?? Date.now()) + ms; checkRegrowth(10); },
   texDataUrl: () => (window as any).__capCamo.toDataURL('image/png'),
 };
@@ -549,10 +571,29 @@ const trees: TreeRec[] = [];
     pine: [0x3d5a3a, 0x35502f, 0x46603c],
     giant: [0x3f5a38, 0x46613e, 0x38522f],
   };
-  const canopyMats = {} as Record<TreeKind, THREE.MeshStandardMaterial[]>;
-  (Object.keys(canopyCols) as TreeKind[]).forEach((k) => {
-    canopyMats[k] = canopyCols[k].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 1, flatShading: true }));
-  });
+  // instanced: 4 trunk InstancedMeshes (per bark material) + 3 canopy pieces
+  // (conifer tiers, spires, deciduous blobs) colored per-instance. ~900 meshes
+  // -> 7 draw calls. The seeded draw order is byte-identical to the old mesh
+  // path, so every forest layout stays exactly what it was.
+  const unitTrunk = new THREE.CylinderGeometry(0.75, 1, 1, 8);
+  const unitCone7 = new THREE.ConeGeometry(1, 1, 7);
+  const unitCone6 = new THREE.ConeGeometry(1, 1, 6);
+  const unitIco = new THREE.IcosahedronGeometry(1, 1);
+  const canopyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, flatShading: true });
+  const trunkBuckets: Record<'oak' | 'birch' | 'aspen' | 'pine', THREE.Matrix4[]> = { oak: [], birch: [], aspen: [], pine: [] };
+  const coneArr: THREE.Matrix4[] = [], coneCol: THREE.Color[] = [];
+  const spireArr: THREE.Matrix4[] = [], spireCol: THREE.Color[] = [];
+  const blobArr: THREE.Matrix4[] = [], blobCol: THREE.Color[] = [];
+  const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler();
+  const _p = new THREE.Vector3(), _s = new THREE.Vector3();
+  const colAt = (kind: TreeKind, idx: number): THREE.Color =>
+    new THREE.Color(canopyCols[kind][idx % canopyCols[kind].length]);
+  const push = (arr: THREE.Matrix4[], pos: THREE.Vector3, scale: THREE.Vector3, rotZ: number, col: THREE.Color | null, colArr: THREE.Color[]) => {
+    _e.set(0, 0, rotZ); _q.setFromEuler(_e);
+    _p.copy(pos); _s.copy(scale);
+    arr.push(_m.compose(_p, _q, _s).clone());
+    if (col && colArr) colArr.push(col);
+  };
   // zone bias: south clearing is open deciduous, the north ridge goes conifer,
   // old-growth giants cluster on the ridge itself
   const rollKind = (x: number, z: number): TreeKind => {
@@ -565,6 +606,7 @@ const trees: TreeRec[] = [];
     return 'oak';
   };
   const placed: [number, number][] = [];
+  const tmpPos = new THREE.Vector3(), tmpScl = new THREE.Vector3();
   for (let i = 0; i < 160; i++) {
     const x = rnd(-46, 46), z = rnd(-46, 46);
     if (Math.hypot(x, z - 22) < 3.6) continue; // spawn clear
@@ -576,11 +618,11 @@ const trees: TreeRec[] = [];
     const conifer = kind === 'pine' || kind === 'giant';
     const h = kind === 'giant' ? rnd(9, 12) : conifer ? rnd(6, 10) : rnd(5, 8);
     const r = kind === 'giant' ? rnd(0.55, 0.8) : conifer ? rnd(0.16, 0.3) : rnd(0.24, 0.45);
-    const mat = kind === 'birch' ? birchMat : kind === 'aspen' ? aspenMat : conifer ? pineMat : oakMat;
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.75, r, h, 8), mat);
-    trunk.position.set(x, h / 2 + groundH(x, z), z);
-    trunk.rotation.z = rnd(-0.05, 0.05);
-    world.add(trunk);
+    const rotZ = rnd(-0.05, 0.05);
+    const trunkKey = kind === 'birch' ? 'birch' : kind === 'aspen' ? 'aspen' : conifer ? 'pine' : 'oak';
+    tmpPos.set(x, h / 2 + groundH(x, z), z);
+    tmpScl.set(r, h, r);
+    push(trunkBuckets[trunkKey], tmpPos, tmpScl, rotZ, null, []);
     obstacles.push({ x, z, r: r + 0.32 });
     trees.push({ x, z, kind, r });
     const by = groundH(x, z);
@@ -590,43 +632,70 @@ const trees: TreeRec[] = [];
       for (let c = 0; c < tiers; c++) {
         const cw = Math.max(0.7, r * (5.4 - c * 1.0) * rnd(0.92, 1.1));
         const ch = h * (0.36 - c * 0.02);
-        const cone = new THREE.Mesh(new THREE.ConeGeometry(cw, ch, 7),
-          canopyMats[kind][(c + i) % canopyMats[kind].length]);
-        cone.position.set(x + rnd(-0.15, 0.15), by + h * (0.52 + c * 0.155), z + rnd(-0.15, 0.15));
-        world.add(cone);
+        const cx = x + rnd(-0.15, 0.15);
+        const cz = z + rnd(-0.15, 0.15);
+        tmpPos.set(cx, by + h * (0.52 + c * 0.155), cz);
+        tmpScl.set(cw, ch, cw);
+        push(coneArr, tmpPos, tmpScl, 0, colAt(kind, c + i), coneCol);
       }
-      const top = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.1, 6), canopyMats[kind][0]);
-      top.position.set(x, by + h + 0.35, z);
-      world.add(top);
+      tmpPos.set(x, by + h + 0.35, z);
+      tmpScl.set(0.5, 1.1, 0.5);
+      push(spireArr, tmpPos, tmpScl, 0, colAt(kind, i), spireCol);
     } else {
       // rounded crown blobs (giants are conifers, so deciduous only here)
       const blobs = 2 + ((srnd() * 2) | 0);
       for (let b = 0; b < blobs; b++) {
         const br = rnd(1.4, 2.6);
-        const canopy = new THREE.Mesh(new THREE.IcosahedronGeometry(br, 1),
-          canopyMats[kind][(b + i) % canopyMats[kind].length]);
-        canopy.position.set(x + rnd(-1.2, 1.2), h + by + rnd(-0.5, 1.4), z + rnd(-1.2, 1.2));
-        canopy.scale.y = rnd(0.5, 0.75);
-        world.add(canopy);
+        const bx = x + rnd(-1.2, 1.2);
+        const byy = h + by + rnd(-0.5, 1.4);
+        const bz = z + rnd(-1.2, 1.2);
+        const sy = rnd(0.5, 0.75);
+        tmpPos.set(bx, byy, bz);
+        tmpScl.set(br, br * sy, br);
+        push(blobArr, tmpPos, tmpScl, 0, colAt(kind, b + i), blobCol);
       }
     }
   }
+  const finishInstanced = (geo: THREE.BufferGeometry, mat: THREE.Material, arr: THREE.Matrix4[], cols: THREE.Color[]) => {
+    if (!arr.length) return;
+    const im = new THREE.InstancedMesh(geo, mat, arr.length);
+    arr.forEach((mtx, i2) => im.setMatrixAt(i2, mtx));
+    cols.forEach((c, i2) => im.setColorAt(i2, c));
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    world.add(im);
+  };
+  finishInstanced(unitTrunk, oakMat, trunkBuckets.oak, []);
+  finishInstanced(unitTrunk, birchMat, trunkBuckets.birch, []);
+  finishInstanced(unitTrunk, aspenMat, trunkBuckets.aspen, []);
+  finishInstanced(unitTrunk, pineMat, trunkBuckets.pine, []);
+  finishInstanced(unitCone7, canopyMat, coneArr, coneCol);
+  finishInstanced(unitCone6, canopyMat, spireArr, spireCol);
+  finishInstanced(unitIco, canopyMat, blobArr, blobCol);
 }
 
-// rocks
+// rocks — one InstancedMesh (was 34 individual meshes); the rnd draw order
+// is untouched, so the seeded layout is byte-identical to v0.5
 {
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x8b8b80, roughness: 1, flatShading: true });
+  const unitRock = new THREE.IcosahedronGeometry(1, 0);
+  const rockMtx: THREE.Matrix4[] = [];
+  const _re = new THREE.Euler(), _rq = new THREE.Quaternion(), _rp = new THREE.Vector3(), _rs = new THREE.Vector3();
   for (let i = 0; i < 34; i++) {
     const x = rnd(-44, 44), z = rnd(-44, 44);
     if (Math.hypot(x, z - 22) < 2.8) continue;
     const r = rnd(0.3, 0.85);
-    const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(r, 0), rockMat);
-    rock.position.set(x, groundH(x, z) + r * 0.35, z);
-    rock.scale.y = 0.6;
-    rock.rotation.set(rnd(0, 3), rnd(0, 3), rnd(0, 3));
-    world.add(rock);
+    _re.set(rnd(0, 3), rnd(0, 3), rnd(0, 3));
+    _rq.setFromEuler(_re);
+    _rp.set(x, groundH(x, z) + r * 0.35, z);
+    _rs.set(r, r * 0.6, r);
+    rockMtx.push(new THREE.Matrix4().compose(_rp, _rq, _rs));
     obstacles.push({ x, z, r: r * 1.05 });
   }
+  const rockIm = new THREE.InstancedMesh(unitRock, rockMat, rockMtx.length);
+  rockMtx.forEach((m, i) => rockIm.setMatrixAt(i, m));
+  rockIm.instanceMatrix.needsUpdate = true;
+  world.add(rockIm);
 }
 
 // mossy fallen log by the spawn (left of the reference shot), following terrain
@@ -641,17 +710,28 @@ const trees: TreeRec[] = [];
   log.position.set(lx, groundH(lx, lz) + rad * 0.55, lz);
   log.rotation.x = Math.atan2(ya - yb, len);
   world.add(log);
-  // moss coating on the log's top
+  // moss coating on the log's top — one InstancedMesh (was 14 meshes);
+  // per-blob radius + HSL shade carried in the instance matrix / color
+  const mossMtx: THREE.Matrix4[] = [], mossCol: THREE.Color[] = [];
+  const _me = new THREE.Euler(), _mq = new THREE.Quaternion(), _mp = new THREE.Vector3(), _ms = new THREE.Vector3();
   for (let s = 0; s < 14; s++) {
     const t = (s / 13 - 0.5) * len * 0.9;
     const px = lx + Math.cos(0.5) * t, pz = lz - Math.sin(0.5) * t;
-    const moss = new THREE.Mesh(
-      new THREE.SphereGeometry(rnd(0.14, 0.3), 6, 4),
-      new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.27, 0.4, rnd(0.3, 0.45)), roughness: 1 }),
-    );
-    moss.scale.y = 0.35;
-    moss.position.set(px + rnd(-0.1, 0.1), groundH(px, pz) + rad * 0.95, pz + rnd(-0.1, 0.1));
-    world.add(moss);
+    const mr = rnd(0.14, 0.3);
+    const mc = new THREE.Color().setHSL(0.27, 0.4, rnd(0.3, 0.45));
+    const mx = px + rnd(-0.1, 0.1), mz = pz + rnd(-0.1, 0.1);
+    _mp.set(mx, groundH(px, pz) + rad * 0.95, mz);
+    _ms.set(mr, mr * 0.35, mr);
+    mossMtx.push(new THREE.Matrix4().compose(_mp, _mq, _ms));
+    mossCol.push(mc);
+  }
+  {
+    const mossIm = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 4),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 }), mossMtx.length);
+    mossMtx.forEach((m, i) => mossIm.setMatrixAt(i, m));
+    mossCol.forEach((c, i) => mossIm.setColorAt(i, c));
+    if (mossIm.instanceColor) mossIm.instanceColor.needsUpdate = true;
+    world.add(mossIm);
   }
   for (let s = 0; s < 5; s++) {
     const t = (s / 4 - 0.5) * len * 0.8;
@@ -666,26 +746,38 @@ const boardTop = 0.34;
 {
   const plankMat = new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.95 });
   const railMat = new THREE.MeshStandardMaterial({ color: 0x6e675c, roughness: 1 });
+  // planks + under-blocks + side rails: 3 InstancedMeshes (was 50 meshes)
+  const plankMtx: THREE.Matrix4[] = [], underMtx: THREE.Matrix4[] = [], railMtx: THREE.Matrix4[] = [];
+  const _be = new THREE.Euler(), _bq = new THREE.Quaternion(), _bp = new THREE.Vector3(), _bs = new THREE.Vector3(1, 1, 1);
   for (let i = 0; i < 16; i++) {
     const z = 27 - i * 1.85;
-    const plank = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.11, 1.72), plankMat);
-    plank.position.set(BOARD_X, boardTop - 0.055 + groundH(BOARD_X, z) * 0.4, z);
-    plank.rotation.y = rnd(-0.012, 0.012);
-    world.add(plank);
-    const under = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.3, 0.16), railMat);
-    under.position.set(BOARD_X - 0.8, boardTop - 0.2 + groundH(BOARD_X, z) * 0.4, z);
-    world.add(under);
-    const under2 = under.clone();
-    under2.position.x = BOARD_X + 0.8;
-    world.add(under2);
+    _be.set(0, rnd(-0.012, 0.012), 0);
+    _bq.setFromEuler(_be);
+    _bp.set(BOARD_X, boardTop - 0.055 + groundH(BOARD_X, z) * 0.4, z);
+    plankMtx.push(new THREE.Matrix4().compose(_bp, _bq, _bs));
+    _be.set(0, 0, 0); _bq.identity();
+    _bp.set(BOARD_X - 0.8, boardTop - 0.2 + groundH(BOARD_X, z) * 0.4, z);
+    underMtx.push(new THREE.Matrix4().compose(_bp, _bq, _bs));
+    _bp.x = BOARD_X + 0.8;
+    underMtx.push(new THREE.Matrix4().compose(_bp, _bq, _bs));
   }
   // rails
   for (const dx of [-1.02, 1.02]) {
-    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 32), railMat);
-    rail.position.set(BOARD_X + dx, boardTop + 0.2, 9);
-    rail.rotation.y = 0;
-    world.add(rail);
+    _bp.set(BOARD_X + dx, boardTop + 0.2, 9);
+    railMtx.push(new THREE.Matrix4().compose(_bp, new THREE.Quaternion(), new THREE.Vector3(1, 1, 1)));
   }
+  const plankIm = new THREE.InstancedMesh(new THREE.BoxGeometry(1.9, 0.11, 1.72), plankMat, plankMtx.length);
+  plankMtx.forEach((m, i) => plankIm.setMatrixAt(i, m));
+  plankIm.instanceMatrix.needsUpdate = true;
+  world.add(plankIm);
+  const underIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 0.3, 0.16), railMat, underMtx.length);
+  underMtx.forEach((m, i) => underIm.setMatrixAt(i, m));
+  underIm.instanceMatrix.needsUpdate = true;
+  world.add(underIm);
+  const railIm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, 0.5, 32), railMat, railMtx.length);
+  railMtx.forEach((m, i) => railIm.setMatrixAt(i, m));
+  railIm.instanceMatrix.needsUpdate = true;
+  world.add(railIm);
 }
 const onBoard = (x: number, z: number): boolean => Math.abs(x - BOARD_X) < 0.95 && z < 27.5 && z > -8.5;
 
@@ -817,63 +909,320 @@ const yellowMat = new THREE.MeshStandardMaterial({
   color: new THREE.Color('#c9b455'), roughness: 1,
 });
 
-const shrooms: THREE.Group[] = [];
+// ---------- mushrooms: instanced per species ----------
+// ~350 caps x 2-3 meshes used to be ~900 draw calls. Now: one InstancedMesh
+// per part per species (stem / cap / ring) = ~11 draw calls for the whole
+// field. The four golden caps stay standalone groups — they carry a real
+// PointLight and breathe on the frame. The seeded stream is preserved exactly
+// (per-cap pose draws in the old order; the per-cap texture draws moved to a
+// per-species side stream so the world layout is byte-identical to before).
+interface ShroomRec {
+  sp: Species;
+  x: number; y: number; z: number;
+  s: number; ry: number; rz: number; phase: number;
+  slot: number;                 // instance slot; -1 for gold
+  group: THREE.Group | null;    // gold + pluck flights
+  light: THREE.PointLight | null;
+}
+const shrooms: ShroomRec[] = [];
 const pickMeshes: THREE.Object3D[] = [];
-const goldCaps: THREE.Group[] = [];
+const goldCaps: ShroomRec[] = [];
 
-function makeMushroom(sp: Species, x: number, y: number, z: number): THREE.Group {
+// shared unit geometry (the instance matrix applies the cap's s)
+const G_STEM_DOME = new THREE.CylinderGeometry(0.032, 0.045, 0.14, 8);
+const G_STEM_TRUMP = new THREE.CylinderGeometry(0.028, 0.055, 0.2, 8);
+const G_DOME = new THREE.SphereGeometry(1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
+const G_TRUMP_CAP = new THREE.CylinderGeometry(0.065, 0.02, 0.11, 9, 1, true);
+const G_RING = new THREE.TorusGeometry(0.035, 0.008, 5, 10);
+const RING_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0));
+const M_STEM: Partial<Record<Species, THREE.MeshStandardMaterial>> = {};
+const M_CAP: Partial<Record<Species, THREE.MeshStandardMaterial>> = {};
+const M_RING = new THREE.MeshStandardMaterial({ color: '#ddd8ce', roughness: 1 });
+// cap texture: one canvas per species (was one per cap) — a per-species side
+// stream, so the world's seeded layout is untouched.
+const capTexCache: Partial<Record<Species, THREE.CanvasTexture | null>> = {};
+function capTexFor(sp: Species): THREE.CanvasTexture | null {
+  if (capTexCache[sp] !== undefined) return capTexCache[sp]!;
   const def = SPECIES[sp];
-  const g = new THREE.Group();
-  const s = rnd(0.8, 1.3);
-  g.userData.sp = sp;
-  g.userData.phase = rnd(0, 6.3);
-  g.rotation.y = rnd(0, 6.3);
-  g.rotation.z = rnd(-0.08, 0.08);
-  g.scale.setScalar(s);
-  const stemH = sp === 'trump' ? 0.2 : 0.14;
-  const stemGeo = sp === 'trump'
-    ? new THREE.CylinderGeometry(0.028, 0.055, stemH, 8)
-    : new THREE.CylinderGeometry(0.032 * s, 0.045 * s, stemH, 8);
-  const stem = new THREE.Mesh(stemGeo, new THREE.MeshStandardMaterial({ color: def.stemCol, roughness: 1 }));
-  stem.position.y = stemH / 2;
-  g.add(stem);
-  let cap: THREE.Mesh;
-  const tex = capTexture(def, sp);
-  const capMatOpts: THREE.MeshStandardMaterialParameters = {
-    color: def.capCol, roughness: 0.65, map: tex ?? undefined,
-  };
-  if (sp === 'trump') {
-    cap = new THREE.Mesh(new THREE.CylinderGeometry(0.065 * s, 0.02 * s, 0.11, 9, 1, true),
-      new THREE.MeshStandardMaterial({ color: def.capCol, roughness: 0.8, side: THREE.DoubleSide }));
-    cap.position.y = stemH + 0.03;
-  } else {
-    const dome = new THREE.SphereGeometry(def.capR * s, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
-    cap = new THREE.Mesh(dome, new THREE.MeshStandardMaterial(capMatOpts));
-    cap.scale.y = 0.8;
-    cap.position.y = stemH - 0.005;
-    if (sp === 'chant') cap.scale.set(1.2, 1.1, 1.2);
-    if (sp === 'deadly') {
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.008, 5, 10),
-        new THREE.MeshStandardMaterial({ color: '#ddd8ce', roughness: 1 }));
-      ring.rotation.x = Math.PI / 2;
-      ring.position.y = stemH * 0.55;
-      g.add(ring);
+  let t: THREE.CanvasTexture | null = null;
+  if (sp === 'fly' || sp === 'chant') {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < sp.length; i++) { h ^= sp.charCodeAt(i); h = Math.imul(h, 16777619); }
+    const tr = mulberry32(h ^ 0x51ed270b);
+    const rng = (a: number, b: number): number => a + tr() * (b - a);
+    t = canvasTex(128, 128, (x) => {
+      x.fillStyle = def.capCol;
+      x.fillRect(0, 0, 128, 128);
+      if (sp === 'fly') {
+        for (let i = 0; i < 14; i++) {
+          x.fillStyle = 'rgba(245,240,230,0.95)';
+          x.beginPath();
+          x.ellipse(rng(6, 122), rng(6, 122), rng(3, 8), rng(3, 8), rng(0, 3), 0, 7);
+          x.fill();
+        }
+        const g = x.createRadialGradient(64, 64, 30, 64, 64, 90);
+        g.addColorStop(0, 'rgba(0,0,0,0)');
+        g.addColorStop(1, 'rgba(60,10,5,0.45)');
+        x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+      } else {
+        x.strokeStyle = 'rgba(150,105,25,0.35)';
+        for (let i = 0; i < 14; i++) {
+          x.lineWidth = rng(1, 2.5);
+          x.beginPath();
+          x.moveTo(64, 64);
+          x.lineTo(64 + Math.cos((i / 14) * 6.28) * 90, 64 + Math.sin((i / 14) * 6.28) * 90);
+          x.stroke();
+        }
+        const g = x.createRadialGradient(64, 64, 10, 64, 64, 70);
+        g.addColorStop(0, 'rgba(255,230,140,0.5)');
+        g.addColorStop(1, 'rgba(140,95,20,0.4)');
+        x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+      }
+    });
+  }
+  capTexCache[sp] = t;
+  return t;
+}
+function ensureMats(sp: Species): void {
+  if (!M_STEM[sp]) M_STEM[sp] = new THREE.MeshStandardMaterial({ color: SPECIES[sp].stemCol, roughness: 1 });
+  if (!M_CAP[sp]) {
+    const def = SPECIES[sp];
+    M_CAP[sp] = new THREE.MeshStandardMaterial({
+      color: def.capCol,
+      roughness: sp === 'trump' ? 0.8 : 0.65,
+      map: capTexFor(sp) ?? undefined,
+    });
+    if (def.gold) {
+      M_CAP[sp].emissive = new THREE.Color('#ffbf2e');
+      M_CAP[sp].emissiveIntensity = 0.75;
     }
   }
-  if (def.gold) {
-    (cap.material as THREE.MeshStandardMaterial).emissive = new THREE.Color('#ffbf2e');
-    (cap.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.75;
+}
+interface PartDef {
+  geo: THREE.BufferGeometry;
+  mat: () => THREE.Material;
+  px: number; py: number; pz: number;
+  scl: (s: number) => [number, number, number];
+  q: THREE.Quaternion | null;
+}
+function domeParts(sp: Species, kx: number, ky: number, kz: number): PartDef[] {
+  const def = SPECIES[sp];
+  // part scale L multiplies the global per-cap s (instance matrix / gold
+  // group scale) — it encodes the old makeMushroom's mixed scaling: dome
+  // stem radii were built at 0.032*s AND group-scaled by s (so L carries s),
+  // heights were not (L stays 1); caps at capR*s geometry * group s
+  const parts: PartDef[] = [
+    { geo: G_STEM_DOME, mat: () => M_STEM[sp]!, px: 0, py: 0.07, pz: 0, scl: (s) => [s, 1, s], q: null },
+    { geo: G_DOME, mat: () => M_CAP[sp]!, px: 0, py: 0.135, pz: 0,
+      scl: (s) => [def.capR * s * kx, def.capR * s * ky, def.capR * s * kz], q: null },
+  ];
+  if (sp === 'deadly') parts.push({ geo: G_RING, mat: () => M_RING, px: 0, py: 0.077, pz: 0, scl: () => [1, 1, 1], q: RING_Q });
+  return parts;
+}
+const PARTS: Record<Species, PartDef[]> = {
+  champ: domeParts('champ', 1, 0.8, 1),
+  fly: domeParts('fly', 1, 0.8, 1),
+  chant: domeParts('chant', 1.2, 1.1, 1.2),
+  deadly: domeParts('deadly', 1, 0.8, 1),
+  trump: [
+    // trumpet stem geometry was NOT pre-scaled (0.028/0.055/0.2 fixed) — only
+    // the group's s applied. cap radii WERE pre-scaled (0.065*s) -> L carries s
+    { geo: G_STEM_TRUMP, mat: () => M_STEM['trump']!, px: 0, py: 0.1, pz: 0, scl: () => [1, 1, 1], q: null },
+    { geo: G_TRUMP_CAP, mat: () => M_CAP['trump']!, px: 0, py: 0.23, pz: 0, scl: (s) => [s, 1, s], q: null },
+  ],
+  // gold is the plain dome shape — capR from the table, scale.y 0.8
+  gold: domeParts('gold', 1, 0.8, 1),
+};
+
+// one InstancedMesh per part per species; slot i in every part = the same cap
+interface InstSet { sp: Species; meshes: THREE.InstancedMesh[]; slots: ShroomRec[]; mats: THREE.Matrix4[][]; }
+const instSets: Record<string, InstSet> = {};
+interface PendingPart { matrices: THREE.Matrix4[]; recs: ShroomRec[]; }
+const pending: Partial<Record<Species, PendingPart[]>> = {};
+for (const sp of Object.keys(SPECIES) as Species[]) pending[sp] = [];
+
+const _mG = new THREE.Matrix4(), _mL = new THREE.Matrix4();
+const _qG = new THREE.Quaternion(), _eG = new THREE.Euler();
+const _pG = new THREE.Vector3(), _sG = new THREE.Vector3();
+const _pL = new THREE.Vector3(), _sL = new THREE.Vector3();
+function partMatrixFor(p: PartDef, rec: ShroomRec): THREE.Matrix4 {
+  _eG.set(0, rec.ry, rec.rz);
+  _qG.setFromEuler(_eG);
+  _pG.set(rec.x, rec.y, rec.z);
+  _sG.setScalar(rec.s);
+  _mG.compose(_pG, _qG, _sG);
+  const [sx, sy, sz] = p.scl(rec.s);
+  _pL.set(p.px, p.py, p.pz);
+  _sL.set(sx, sy, sz);
+  _mL.compose(_pL, p.q ?? new THREE.Quaternion(), _sL);
+  return _mG.clone().multiply(_mL);
+}
+function drawPose(sp: Species): { s: number; phase: number; ry: number; rz: number } {
+  // the old makeMushroom draw order, so the seeded layout never shifts:
+  // s, phase, ry, rz — then the per-cap cap texture consumed 70 seeded draws
+  // for fly agaric and 14 for chanterelle (14 features x (rnd+1..4 draws) +
+  // 1 lineWidth). The texture now lives on a per-species side stream, so the
+  // draws are consumed here (discarded) to keep every later cap at its spot.
+  const s = rnd(0.8, 1.3);
+  const phase = rnd(0, 6.3);
+  const ry = rnd(0, 6.3);
+  const rz = rnd(-0.08, 0.08);
+  if (sp === 'fly') {
+    for (let i = 0; i < 14; i++) { rnd(6, 122); rnd(6, 122); rnd(3, 8); rnd(3, 8); rnd(0, 3); }
+  } else if (sp === 'chant') {
+    for (let i = 0; i < 14; i++) { rnd(1, 2.5); }
+  }
+  return { s, phase, ry, rz };
+}
+function buildCapGroup(sp: Species, rec: ShroomRec): THREE.Group {
+  ensureMats(sp);
+  const g = new THREE.Group();
+  g.position.set(rec.x, rec.y, rec.z);
+  g.rotation.y = rec.ry;
+  g.rotation.z = rec.rz;
+  // the old makeMushroom group scale — part scales L already carry the
+  // pre-scaled radii, and this final s completes the old s*s math
+  g.scale.setScalar(rec.s);
+  for (const p of PARTS[sp]) {
+    const m = new THREE.Mesh(p.geo, p.mat());
+    m.position.set(p.px, p.py, p.pz);
+    const [sx, sy, sz] = p.scl(rec.s);
+    m.scale.set(sx, sy, sz);
+    if (p.q) m.quaternion.copy(p.q);
+    g.add(m);
+  }
+  if (sp === 'gold') {
     const light = new THREE.PointLight(0xffcf5a, 0.7, 2.2, 2);
-    light.position.y = stemH + 0.08;
+    light.position.y = 0.22;
     g.add(light);
     g.userData.light = light;
-    goldCaps.push(g);
   }
-  g.add(cap);
-  g.position.set(x, y, z);
-  shrooms.push(g);
-  for (const m of g.children) pickMeshes.push(m);
   return g;
+}
+function addCapInstanced(sp: Species, x: number, y: number, z: number, s: number, ry: number, rz: number, phase: number): ShroomRec {
+  const rec: ShroomRec = { sp, x, y, z, s, ry, rz, phase, slot: -1, group: null, light: null };
+  shrooms.push(rec);
+  const def = SPECIES[sp];
+  if (def.gold) {
+    const g = buildCapGroup(sp, rec);
+    world.add(g);
+    rec.group = g;
+    rec.light = g.userData.light as THREE.PointLight;
+    goldCaps.push(rec);
+    for (const m of g.children) if ((m as THREE.Mesh).isMesh) pickMeshes.push(m);
+    return rec;
+  }
+  const set = instSets[sp];
+  if (set) {
+    const slot = set.slots.length;
+    rec.slot = slot;
+    set.slots.push(rec);
+    for (let p = 0; p < set.meshes.length; p++) {
+      const m = partMatrixFor(PARTS[sp][p], rec);
+      set.mats[p].push(m);
+      set.meshes[p].setMatrixAt(slot, m);
+    }
+    for (let p = 0; p < set.meshes.length; p++) {
+      set.meshes[p].count = set.slots.length;
+      set.meshes[p].instanceMatrix.needsUpdate = true;
+    }
+  } else {
+    // build phase: collect matrices until allocateInstances()
+    const parts = PARTS[sp];
+    for (let p = 0; p < parts.length; p++) {
+      if (!pending[sp]![p]) pending[sp]![p] = { matrices: [], recs: [] };
+      pending[sp]![p]!.matrices.push(partMatrixFor(parts[p], rec));
+      pending[sp]![p]!.recs.push(rec);
+    }
+  }
+  return rec;
+}
+// take a cap out of the world. swap-remove keeps instance slots compact — O(1)
+function removeShroom(rec: ShroomRec): void {
+  if (rec.group) {
+    world.remove(rec.group);
+    const gi = goldCaps.indexOf(rec);
+    if (gi >= 0) goldCaps.splice(gi, 1); // the bell must not keep ringing from a picked cap
+    if (rec.light) { rec.light.dispose(); rec.light = null; }
+    for (const m of [...rec.group.children]) {
+      const pi = pickMeshes.indexOf(m);
+      if (pi >= 0) pickMeshes.splice(pi, 1);
+    }
+    rec.group = null;
+    return;
+  }
+  const set = instSets[rec.sp];
+  if (set) {
+    const n = set.slots.length;
+    if (rec.slot < 0 || rec.slot >= n) return;
+    const last = set.slots[n - 1];
+    if (last !== rec) {
+      for (let p = 0; p < set.meshes.length; p++) {
+        const m = set.mats[p][n - 1];
+        set.mats[p][rec.slot] = m;
+        set.meshes[p].setMatrixAt(rec.slot, m);
+      }
+      last.slot = rec.slot;
+      set.slots[rec.slot] = last;
+    }
+    for (let p = 0; p < set.meshes.length; p++) {
+      set.meshes[p].count = n - 1;
+      set.meshes[p].instanceMatrix.needsUpdate = true;
+    }
+    set.slots.length = n - 1;
+    for (let p = 0; p < set.mats.length; p++) set.mats[p].length = n - 1;
+  } else {
+    for (const pp of pending[rec.sp] ?? []) {
+      if (!pp) continue;
+      const i = pp.recs.indexOf(rec);
+      if (i >= 0) { pp.recs.splice(i, 1); pp.matrices.splice(i, 1); }
+    }
+  }
+}
+function allocateInstances(): void {
+  // turn pending matrices into the per-species InstancedMeshes. capacity = the
+  // initial alive population; stubs <-> caps keep the count at or below it, so
+  // a regrowth always has a free slot.
+  for (const sp of Object.keys(pending) as Species[]) {
+    if (SPECIES[sp].gold) continue;
+    ensureMats(sp);
+    const parts = PARTS[sp];
+    const set: InstSet = { sp, meshes: [], slots: [], mats: [] };
+    let slotRecs: ShroomRec[] = [];
+    for (let p = 0; p < parts.length; p++) {
+      const pp = pending[sp]?.[p];
+      if (!pp || !pp.matrices.length) continue;
+      if (!slotRecs.length) slotRecs = pp.recs;
+      const im = new THREE.InstancedMesh(parts[p].geo, parts[p].mat(), pp.matrices.length);
+      pp.matrices.forEach((m, i) => im.setMatrixAt(i, m));
+      im.instanceMatrix.needsUpdate = true;
+      im.frustumCulled = false; // instances span the whole forest
+      im.userData.sp = sp;
+      world.add(im);
+      set.meshes.push(im);
+      set.mats.push(pp.matrices);
+    }
+    if (!set.meshes.length) continue;
+    set.slots = slotRecs;
+    slotRecs.forEach((rec, i) => { rec.slot = i; });
+    instSets[sp] = set;
+    for (const im of set.meshes) pickMeshes.push(im);
+  }
+}
+function plant(sp: Species, x: number, y: number, z: number): ShroomRec {
+  const d = drawPose(sp);
+  const rec = addCapInstanced(sp, x, y, z, d.s, d.ry, d.rz, d.phase);
+  const k = stubKey(sp, x, z);
+  const t = saved.harvested[k];
+  if (t === undefined || nowMs() - t >= REGROW_MS[sp]) return rec;
+  // the woods still remember this cut — swap the cap for its stub
+  removeShroom(rec);
+  const si = shrooms.indexOf(rec);
+  if (si >= 0) shrooms.splice(si, 1);
+  const sg = makeStub(sp, x, y, z);
+  world.add(sg);
+  stubs.push({ g: sg, sp, x, y, z, key: k });
+  return rec;
 }
 
 // ---------- the forest's memory ----------
@@ -907,41 +1256,6 @@ function makeStub(sp: Species, x: number, y: number, z: number): THREE.Group {
 // away, and the ledger (keyed by seed + spot) is what makes "your forest" one
 // that changes because of you. slow species come back slow: the golden cap
 // keeps a two-hour pilgrimage.
-// plant() builds the real cap first so the seeded stream consumes identically
-// whether the spot regrows or stands as a stub — the layout never shifts.
-function plant(sp: Species, x: number, y: number, z: number): THREE.Group {
-  const g = makeMushroom(sp, x, y, z);
-  const k = stubKey(sp, x, z);
-  const t = saved.harvested[k];
-  if (t === undefined || nowMs() - t >= REGROW_MS[sp]) return g;
-  // the woods still remember this cut — swap the cap for its stub
-  world.remove(g);
-  for (const m of [...g.children]) {
-    const pi = pickMeshes.indexOf(m);
-    if (pi >= 0) pickMeshes.splice(pi, 1);
-  }
-  const si = shrooms.indexOf(g);
-  if (si >= 0) shrooms.splice(si, 1);
-  const gi = goldCaps.indexOf(g);
-  if (gi >= 0) goldCaps.splice(gi, 1);
-  g.traverse((o) => {
-    const m = o as THREE.Mesh;
-    if (m.geometry) m.geometry.dispose();
-    const mat = m.material as THREE.Material | THREE.Material[] | undefined;
-    if (mat) {
-      const list = Array.isArray(mat) ? mat : [mat];
-      for (const mm of list) {
-        const map = (mm as THREE.MeshStandardMaterial).map;
-        if (map) map.dispose();
-        mm.dispose();
-      }
-    }
-  });
-  const sg = makeStub(sp, x, y, z);
-  world.add(sg);
-  stubs.push({ g: sg, sp, x, y, z, key: k });
-  return sg;
-}
 let regrowAcc = 0;
 // a regrown cap must look the same no matter WHEN it regrows — pose is a pure
 // function of seed + spot (a side mulberry32 stream), so it never disturbs
@@ -970,14 +1284,10 @@ function checkRegrowth(dt: number): void {
     });
     stubs.splice(i, 1);
     delete saved.harvested[s.key];
-    // the spot regrows with a fresh cap: same species, same spot, fixed pose
-    const g = makeMushroom(s.sp, s.x, s.y, s.z);
+    // the spot regrows with a fresh cap: same species, same spot, fixed pose —
+    // the side stream means no world-seed draws happen here at all
     const p = regrowPose(`${forestSeed}|${s.key}`);
-    g.scale.setScalar(p.s);
-    g.rotation.y = p.ry;
-    g.rotation.z = p.rz;
-    g.userData.phase = p.ph;
-    world.add(g);
+    addCapInstanced(s.sp, s.x, s.y, s.z, p.s, p.ry, p.rz, p.ph);
     saveSave();
   }
 }
@@ -1001,49 +1311,69 @@ const bushSpots: { x: number; z: number }[] = [];
 }
 const berryGeo = new THREE.SphereGeometry(0.016, 6, 5);
 const berryMat = new THREE.MeshStandardMaterial({ color: 0x2e3450, roughness: 0.35 });
-for (let bi = 0; bi < bushSpots.length; bi++) {
-  const bs = bushSpots[bi];
-  const seeded = bi < 4; // the spawn-corridor thicket
-  const bush = new THREE.Group();
-  const baseY = groundH(bs.x, bs.z);
-  // dark foliage core: keeps the leaf cards from reading as floating sprites
-  const core = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(0.5, 1),
-    new THREE.MeshStandardMaterial({ color: 0x41603a, roughness: 1, flatShading: true }),
-  );
-  core.scale.set(1.0, 0.55, 1.0);
-  core.position.y = 0.22;
-  bush.add(core);
-  const cards = (rnd(46, 66)) | 0;
-  for (let i = 0; i < cards; i++) {
-    const leaf = new THREE.Mesh(leafCardGeo, srnd() < 0.1 ? yellowMat : bushMats[(srnd() * bushMats.length) | 0]);
-    const ang = rnd(0, 6.3);
-    const rad = rnd(0.3, 0.9);
-    leaf.position.set(Math.cos(ang) * rad, rnd(0.06, 0.85), Math.sin(ang) * rad);
-    leaf.rotation.set(rnd(-0.9, 0.3), rnd(0, 6.3), rnd(-0.4, 0.6));
-    const ls = rnd(1.5, 2.8);
-    leaf.scale.set(ls, ls, ls);
-    bush.add(leaf);
+{
+  // Instanced: every leaf card across all bushes shares one InstancedMesh per
+  // material (6), all cores share one, all berries share one. ~2,800 meshes ->
+  // 8 draw calls. Layout is seed-deterministic; world matrices are composed
+  // directly (bushes are pure translations, so world = bush + local).
+  const coreGeo = new THREE.IcosahedronGeometry(0.5, 1);
+  const coreMat = new THREE.MeshStandardMaterial({ color: 0x41603a, roughness: 1, flatShading: true });
+  const cardMats = [...bushMats, yellowMat];
+  const cardArrays: THREE.Matrix4[][] = cardMats.map(() => []);
+  const coreArr: THREE.Matrix4[] = [];
+  const berryArr: THREE.Matrix4[] = [];
+  const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler();
+  const _p = new THREE.Vector3(), _s = new THREE.Vector3();
+  for (let bi = 0; bi < bushSpots.length; bi++) {
+    const bs = bushSpots[bi];
+    const seeded = bi < 4; // the spawn-corridor thicket
+    const baseY = groundH(bs.x, bs.z);
+    // dark foliage core: keeps the leaf cards from reading as floating sprites
+    _e.set(0, 0, 0); _q.setFromEuler(_e);
+    _p.set(bs.x, baseY + 0.22, bs.z);
+    _s.set(1.0, 0.55, 1.0);
+    coreArr.push(_m.compose(_p, _q, _s).clone());
+    const cards = (rnd(46, 66)) | 0;
+    for (let i = 0; i < cards; i++) {
+      // same draw order as before: a 10% yellow test, then a material pick
+      const matIdx = srnd() < 0.1 ? cardMats.length - 1 : (srnd() * bushMats.length) | 0;
+      const ang = rnd(0, 6.3), rad = rnd(0.3, 0.9);
+      _e.set(rnd(-0.9, 0.3), rnd(0, 6.3), rnd(-0.4, 0.6));
+      _q.setFromEuler(_e);
+      _p.set(bs.x + Math.cos(ang) * rad, baseY + rnd(0.06, 0.85), bs.z + Math.sin(ang) * rad);
+      const ls = rnd(1.5, 2.8);
+      _s.set(ls, ls, ls);
+      cardArrays[matIdx].push(_m.compose(_p, _q, _s).clone());
+    }
+    // bilberry berries tucked in the foliage
+    const bn = (rnd(3, 7)) | 0;
+    for (let i = 0; i < bn; i++) {
+      const ang = rnd(0, 6.3), rad = rnd(0.1, 0.45);
+      _e.set(0, 0, 0); _q.setFromEuler(_e);
+      _p.set(bs.x + Math.cos(ang) * rad, baseY + rnd(0.08, 0.4), bs.z + Math.sin(ang) * rad);
+      _s.set(1, 1, 1);
+      berryArr.push(_m.compose(_p, _q, _s).clone());
+    }
+    // litter around the bush: field mushrooms in the open ground (host-bound
+    // species grow strictly at their trees, so the bush floor stays field-only).
+    // the seeded thicket by the spawn keeps its fuller litter — it's the title shot.
+    const count = seeded ? 1 + ((srnd() * 3) | 0) : 1 + ((srnd() * 2) | 0);
+    for (let i = 0; i < count; i++) {
+      const ang = rnd(0, 6.3), rad = rnd(0.25, 1.1);
+      const mx = bs.x + Math.cos(ang) * rad, mz = bs.z + Math.sin(ang) * rad;
+      plant('champ', mx, groundH(mx, mz), mz);
+    }
   }
-  // bilberry berries tucked in the foliage
-  const bn = (rnd(3, 7)) | 0;
-  for (let i = 0; i < bn; i++) {
-    const b = new THREE.Mesh(berryGeo, berryMat);
-    const ang = rnd(0, 6.3), rad = rnd(0.1, 0.45);
-    b.position.set(Math.cos(ang) * rad, rnd(0.08, 0.4), Math.sin(ang) * rad);
-    bush.add(b);
-  }
-  bush.position.set(bs.x, baseY, bs.z);
-  world.add(bush);
-  // litter around the bush: field mushrooms in the open ground (host-bound
-  // species grow strictly at their trees, so the bush floor stays field-only).
-  // seeded thicket by the spawn keeps its fuller litter — it's the title shot.
-  const count = seeded ? 1 + ((srnd() * 3) | 0) : 1 + ((srnd() * 2) | 0);
-  for (let i = 0; i < count; i++) {
-    const ang = rnd(0, 6.3), rad = rnd(0.25, 1.1);
-    const mx = bs.x + Math.cos(ang) * rad, mz = bs.z + Math.sin(ang) * rad;
-    world.add(plant('champ', mx, groundH(mx, mz), mz));
-  }
+  const addInstanced = (geo: THREE.BufferGeometry, mat: THREE.Material, arr: THREE.Matrix4[]) => {
+    if (!arr.length) return;
+    const im = new THREE.InstancedMesh(geo, mat, arr.length);
+    arr.forEach((mtx, i) => im.setMatrixAt(i, mtx));
+    im.instanceMatrix.needsUpdate = true;
+    world.add(im);
+  };
+  cardArrays.forEach((arr, mi) => addInstanced(leafCardGeo, cardMats[mi], arr));
+  addInstanced(coreGeo, coreMat, coreArr);
+  addInstanced(berryGeo, berryMat, berryArr);
 }
 
 // ---------- habitat-bound mushrooms: every species has its host trees ----------
@@ -1072,7 +1402,7 @@ for (const tr of trees) {
     for (let i = 0; i < n; i++) {
       const ang = rnd(0, 6.3), rad = tr.r + rnd(0.25, 0.85); // close enough that the host is the nearest trunk
       const mx = tr.x + Math.cos(ang) * rad, mz = tr.z + Math.sin(ang) * rad;
-      world.add(plant(sp, mx, groundH(mx, mz), mz));
+      plant(sp, mx, groundH(mx, mz), mz);
     }
   }
 }
@@ -1082,11 +1412,11 @@ for (let i = 0; i < 28; i++) {
   const x = rnd(-45, 45), z = rnd(-45, 45);
   let clear = true;
   for (const t of trees) if (Math.hypot(t.x - x, t.z - z) < 2.2) { clear = false; break; }
-  if (clear) world.add(plant('champ', x, groundH(x, z), z));
+  if (clear) plant('champ', x, groundH(x, z), z);
 }
 // guarantee a discoverable population of every species (field notes wants them all)
 {
-  const plantAt = (sp: Species, x: number, z: number) => world.add(plant(sp, x, groundH(x, z), z));
+  const plantAt = (sp: Species, x: number, z: number) => plant(sp, x, groundH(x, z), z);
   const underKind = (kinds: TreeKind[]): [number, number] => {
     const pool = trees.filter((t) => kinds.includes(t.kind));
     const t = pool[(srnd() * pool.length) | 0];
@@ -1095,7 +1425,7 @@ for (let i = 0; i < 28; i++) {
   };
   const ensure = (sp: Species, min: number, kinds: TreeKind[]) => {
     let have = 0;
-    for (const g of shrooms) if (g.userData.sp === sp) have++;
+    for (const g of shrooms) if (g.sp === sp) have++;
     for (let i = have; i < min; i++) {
       if (!kinds.length) plantAt(sp, rnd(-45, 45), rnd(-45, 45));
       else { const [px, pz] = underKind(kinds); plantAt(sp, px, pz); }
@@ -1111,14 +1441,12 @@ for (let i = 0; i < 28; i++) {
 {
   const giants = trees.filter((t) => t.kind === 'giant');
   let golds = 0;
-  for (const g of shrooms) if (g.userData.sp === 'gold') golds++;
+  for (const g of shrooms) if (g.sp === 'gold') golds++;
   if (golds < 4) {
     for (const g of shrooms) {
       if (golds >= 4) break;
-      if (g.userData.sp !== 'champ') continue;
-      world.remove(g);
-      const idx = pickMeshes.findIndex((m) => m.parent === g);
-      if (idx >= 0) pickMeshes.splice(idx, 1);
+      if (g.sp !== 'champ') continue;
+      removeShroom(g);
       const ni = shrooms.indexOf(g);
       if (ni >= 0) shrooms.splice(ni, 1);
       let mx: number, mz: number;
@@ -1127,11 +1455,13 @@ for (let i = 0; i < 28; i++) {
         const ang = rnd(0, 6.3), rad = host.r + rnd(0.3, 0.9);
         mx = host.x + Math.cos(ang) * rad; mz = host.z + Math.sin(ang) * rad;
       } else { mx = rnd(-38, 38); mz = rnd(-38, 38); }
-      world.add(plant('gold', mx, groundH(mx, mz), mz));
+      plant('gold', mx, groundH(mx, mz), mz);
       golds++;
     }
   }
 }
+// the forest is fully built — turn the pending matrices into InstancedMeshes
+allocateInstances();
 // the ledger keeps only cuts that have not fully regrown (bounds the save,
 // and clears a spot for its next life)
 {
@@ -1236,9 +1566,9 @@ function updateArm(dt: number, t: number): void {
   let target: THREE.Vector3 | null = null;
   if (targetShroom) {
     target = new THREE.Vector3(
-      targetShroom.position.x,
-      targetShroom.position.y + 0.07,
-      targetShroom.position.z,
+      targetShroom.x,
+      targetShroom.y + 0.07,
+      targetShroom.z,
     );
   }
   const bobY = Math.sin(walkPhase * 2) * 0.018 * moveAmount;
@@ -1284,7 +1614,7 @@ const keys = new Set<string>();
 let walkPhase = 0;
 let stepAcc = 0;
 let moveAmount = 0;
-let targetShroom: THREE.Group | null = null;
+let targetShroom: ShroomRec | null = null;
 
 const raycaster = new THREE.Raycaster();
 raycaster.far = 2.7;
@@ -1301,27 +1631,44 @@ function syncCameraAndTarget(): void {
   updateTarget();
 }
 
+function resolveShroomHit(h: THREE.Intersection): ShroomRec | null {
+  const o = h.object as THREE.Mesh;
+  if ((o as THREE.InstancedMesh).isInstancedMesh) {
+    const set = instSets[o.userData.sp as string];
+    const id = h.instanceId;
+    if (!set || id === undefined || id < 0 || id >= set.slots.length) return null;
+    return set.slots[id];
+  }
+  // standalone group child (a golden cap, or a cap mid-pluck-flight)
+  let p: THREE.Object3D | null = o;
+  while (p) {
+    const r = shrooms.find((x) => x.group === p);
+    if (r) return r;
+    p = p.parent;
+  }
+  return null;
+}
+
 function updateTarget(): void {
   if (G.mode !== 'play') { targetShroom = null; targetRing.visible = false; G.targetName = ''; return; }
   // two rays: crosshair, plus a lower one so "looking at the ground beside it" still counts
-  let best: THREE.Group | null = null;
+  let best: ShroomRec | null = null;
   for (const ndc of [new THREE.Vector2(0, 0), new THREE.Vector2(0, -0.075)]) {
     raycaster.setFromCamera(ndc, camera);
     const hits = raycaster.intersectObjects(pickMeshes, false);
     for (const h of hits) {
-      let o: THREE.Object3D | null = h.object;
-      while (o && !shrooms.includes(o as THREE.Group)) o = o.parent;
-      if (o) { best = o as THREE.Group; break; }
+      const r = resolveShroomHit(h);
+      if (r) { best = r; break; }
     }
     if (best) break;
   }
   targetShroom = best;
-  G.targetName = best ? (SPECIES[best.userData.sp as Species].name) : '';
+  G.targetName = best ? SPECIES[best.sp].name : '';
   hudTarget.textContent = G.targetName;
   hudTarget.classList.toggle('show', !!best);
   if (best) {
     targetRing.visible = true;
-    targetRing.position.set(best.position.x, best.position.y + 0.015, best.position.z);
+    targetRing.position.set(best.x, best.y + 0.015, best.z);
   } else targetRing.visible = false;
 }
 
@@ -1348,38 +1695,39 @@ const NOTE_LINES: Record<Species, string> = {
 };
 function doPickAction(): void {
   if (G.mode !== 'play' || !targetShroom) return;
-  punchT = 1;
-  armPunchTarget = targetShroom.position;
   fistT = 1;
   const g = targetShroom;
   targetShroom = null;
-  const sp = g.userData.sp as Species;
+  const sp = g.sp;
   const def = SPECIES[sp];
-  // the cap flies into the fist (no pop-in-vanish)
-  world.remove(g);
-  const idx = pickMeshes.findIndex((m) => m.parent === g);
-  if (idx >= 0) pickMeshes.splice(idx, 1);
+  const gp = new THREE.Vector3(g.x, g.y, g.z);
+  punchT = 1;
+  armPunchTarget = new THREE.Vector3(g.x, g.y + 0.07, g.z);
+  // the cap flies into the fist (no pop-in-vanish). instanced caps get a
+  // fresh group built from the record; the gold group is reused. either way
+  // the flight group stays in the scene so it renders while it lerps to the
+  // hand (the old code detached it mid-flight — it never really flew).
+  const fg = g.group ? g.group : buildCapGroup(sp, g);
+  removeShroom(g);
+  fg.scale.setScalar(1);
+  world.add(fg);
   const si = shrooms.indexOf(g);
   if (si >= 0) shrooms.splice(si, 1);
-  if (sp === 'gold') {
-    const gi = goldCaps.indexOf(g);
-    if (gi >= 0) goldCaps.splice(gi, 1); // the bell must not keep ringing from a picked cap
-  }
   // the forest remembers the cut: a stub stands where the cap was
   {
-    const k = stubKey(sp, g.position.x, g.position.z);
+    const k = stubKey(sp, g.x, g.z);
     saved.harvested[k] = nowMs();
-    const sg = makeStub(sp, g.position.x, g.position.y, g.position.z);
+    const sg = makeStub(sp, g.x, g.y, g.z);
     world.add(sg);
-    stubs.push({ g: sg, sp, x: g.position.x, y: g.position.y, z: g.position.z, key: k });
+    stubs.push({ g: sg, sp, x: g.x, y: g.y, z: g.z, key: k });
     saveSave();
   }
-  flights.push({ g, from: g.position.clone(), t: 0, dur: 0.22 });
+  flights.push({ g: fg, from: gp.clone(), t: 0, dur: 0.22 });
   // ground ring + spore motes where the cap was
   ringT = 0;
-  pickRing.position.set(g.position.x, g.position.y + 0.02, g.position.z);
+  pickRing.position.set(g.x, g.y + 0.02, g.z);
   const moteCol = def.gold ? 0xffd23f : def.bad ? 0xd8d2c0 : 0xc9d8a8;
-  spawnMotes(g.position, moteCol, def.gold ? 12 : 7);
+  spawnMotes(gp, moteCol, def.gold ? 12 : 7);
   SFX.thud();
   if (def.gold) freezeS = 0.06; // half a heartbeat
   G.picks++;
@@ -1690,6 +2038,7 @@ let tAcc = 0;
 let bellTimer = 2.8; // the golden cap's bell, first ring
 function animate(): void {
   requestAnimationFrame(animate);
+  _frameT0 = performance.now();
   const rawDt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
   const dt = freezeS > 0 ? rawDt * 0.18 : rawDt; // golden-cap freeze: half a heartbeat
@@ -1758,19 +2107,18 @@ function animate(): void {
     // from their bearing — you can't hear where it's from until you're close,
     // but the pan tells you which way to walk
     for (const gc of goldCaps) {
-      const gl = gc.userData.light as THREE.PointLight | undefined;
-      if (gl) gl.intensity = 0.5 + 0.28 * (0.5 + 0.5 * Math.sin(t * 2.1 + (gc.userData.phase as number)));
+      const gl = gc.light as THREE.PointLight | undefined;
+      if (gl) gl.intensity = 0.5 + 0.28 * (0.5 + 0.5 * Math.sin(t * 2.1 + gc.phase));
     }
     if (goldCaps.length) {
-      let best: THREE.Group | null = null;
-      let bd = 1e9;
+      let bd = 1e9, bx = 0, bz = 0, found = false;
       for (const gc of goldCaps) {
-        const d = Math.hypot(gc.position.x - player.x, gc.position.z - player.z);
-        if (d < bd) { bd = d; best = gc; }
+        const d = Math.hypot(gc.x - player.x, gc.z - player.z);
+        if (d < bd) { bd = d; bx = gc.x; bz = gc.z; found = true; }
       }
-      if (best) {
+      if (found) {
         const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
-        const dx = best.position.x - player.x, dz = best.position.z - player.z;
+        const dx = bx - player.x, dz = bz - player.z;
         const len = Math.max(0.001, Math.hypot(dx, dz));
         const cross = fx * (dz / len) - fz * (dx / len);
         const dot = fx * (dx / len) + fz * (dz / len);
@@ -1799,17 +2147,22 @@ function animate(): void {
   updateTarget();
   updateArm(dt, t);
 
-  // shroom idle sway + gold pulse
-  for (const g of shrooms) {
-    if (g.userData.sp === 'gold') {
-      const s = 1 + Math.sin(t * 2.6 + g.userData.phase) * 0.06;
-      g.scale.setScalar(s);
-      const l = g.userData.light as THREE.PointLight | undefined;
-      if (l) l.intensity = 0.6 + Math.sin(t * 2.6 + g.userData.phase) * 0.25;
+  // golden caps breathe (standalone groups; instanced caps are static like before)
+  for (const gc of goldCaps) {
+    if (gc.group) {
+      const s = 1 + Math.sin(t * 2.6 + gc.phase) * 0.06;
+      gc.group.scale.setScalar(s);
     }
+    const l = gc.light;
+    if (l) l.intensity = 0.6 + Math.sin(t * 2.6 + gc.phase) * 0.25;
   }
 
+  const _r0 = performance.now();
   renderer.render(scene, camera);
+  _lastRenderMs = performance.now() - _r0;
+  const _fms = performance.now() - _frameT0;
+  _frameSamples.push(_fms);
+  if (_frameSamples.length > 120) _frameSamples.shift();
 }
 animate();
 
