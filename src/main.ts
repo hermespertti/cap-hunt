@@ -48,6 +48,7 @@ let _frameT0 = 0;
   },
   teleport: (x: number, z: number) => {
     player.x = x; player.z = z;
+    vel.x = 0; vel.z = 0; // a teleport shouldn't carry momentum
   },
   aim: (yaw: number, pitch: number) => {
     player.yaw = yaw; player.pitch = pitch;

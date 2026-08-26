@@ -62,6 +62,13 @@ const capSpot = await page.evaluate(() => {
   window.__cap.aimAt(best.x, best.z);
   return best;
 });
+// v0.8 momentum: after any movement the player glides a bit — settle before
+// reading raycast results (a drifting crosshair would otherwise miss)
+for (let i = 0; i < 40; i++) {
+  const sp = await page.evaluate(() => window.__cap.state().speed);
+  if (sp < 0.2) break;
+  await new Promise(r => setTimeout(r, 100));
+}
 await new Promise(r => setTimeout(r, 300));
 const tgt = await page.evaluate(() => window.__cap.state().target);
 ok('raycast finds a shroom', !!capSpot && !!tgt, `spot=${capSpot ? capSpot.sp : 'none'} target=${tgt}`);
@@ -206,11 +213,13 @@ await new Promise(r => setTimeout(r, 700));
   const rest0 = await page.evaluate(() => window.__cap.state());
   ok('fov at rest (v0.8)', Math.abs(rest0.fov - 68) < 1.5, `fov=${rest0.fov}`);
   await page.evaluate(() => window.__cap.keys('KeyW', true));
+  await page.evaluate(() => window.__cap.keys('ShiftLeft', true));
   await new Promise(r => setTimeout(r, 1600));
   const run = await page.evaluate(() => window.__cap.state());
   ok('run reaches speed (v0.8)', run.speed > 4.3, `speed=${run.speed}`);
   ok('fov widens at run speed (v0.8)', run.fov > 71, `fov=${run.fov}`);
   await page.evaluate(() => window.__cap.keys('KeyW', false));
+  await page.evaluate(() => window.__cap.keys('ShiftLeft', false));
   await new Promise(r => setTimeout(r, 1300));
   const stopped = await page.evaluate(() => window.__cap.state());
   ok('friction: speed decays to 0 (v0.8)', stopped.speed < 0.3, `speed=${stopped.speed}`);
