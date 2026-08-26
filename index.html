@@ -35,6 +35,8 @@
   .float.good{color:#a8d878;}
   .float.gold{color:#ffd23f;font-size:19px;}
   .float.bad{color:#e0a0a0;}
+  .float.note{color:#d8d2c0;font-size:13px;font-weight:500;font-style:italic;max-width:420px;line-height:1.4;}
+  .cwarn{display:block;margin-top:3px;font-size:11px;font-style:italic;color:#e0a0a0;letter-spacing:.3px;}
   @keyframes rise{0%{opacity:0;transform:translateY(14px);}15%{opacity:1;transform:translateY(0);}80%{opacity:1;}100%{opacity:0;transform:translateY(-26px);}}
   .screen{position:fixed;inset:0;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(16,20,15,.78);backdrop-filter:blur(5px);color:#f4efe2;text-align:center;overflow-y:auto;}
   #titleScreen{background:rgba(12,16,12,.42);backdrop-filter:none;padding:18px 12px;justify-content:flex-start;}
@@ -95,6 +97,11 @@
   .basketRows{min-width:220px;text-align:left;}
   .erow{display:flex;justify-content:space-between;gap:18px;font-size:13px;color:#d8d2c0;padding:2px 0;}
   .erow b{color:#f4efe2;}
+  #endGhost{width:min(520px,86vw);margin:18px auto 0;}
+  .gtrack{position:relative;height:10px;border-radius:6px;background:rgba(244,239,226,.1);overflow:hidden;}
+  .gfill{height:100%;width:0;border-radius:6px;background:linear-gradient(90deg,#7fa05a,#a8d878);transition:width .9s cubic-bezier(.22,1,.36,1);}
+  .gghost{position:absolute;top:-3px;bottom:-3px;width:3px;border-radius:2px;background:#ffd23f;box-shadow:0 0 8px rgba(255,210,63,.8);}
+  .glabel{margin-top:6px;font-size:11px;letter-spacing:1.2px;color:#c9c2ae;}
   #muteHint{bottom:18px;right:16px;font-size:10px;color:#b8b2a0;letter-spacing:1px;}
 </style>
 </head>
@@ -139,6 +146,7 @@
   <div id="endRating"></div>
   <div id="endSub"></div>
   <div id="endWeight"></div>
+  <div id="endGhost"></div>
   <div id="endStats" class="endStats"></div>
   <button class="btn" id="againBtn">Forage again</button>
 </div>

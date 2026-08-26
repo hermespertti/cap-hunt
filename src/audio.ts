@@ -277,3 +277,69 @@ export function setMuted(m: boolean): void {
 export function isMuted(): boolean {
   return muted;
 }
+
+// the forest holds its breath: wind drops, birds go quiet, for a moment
+// — used when a new species joins the field notes. that's when the world
+// should ascribe meaning to you, not when you tap a button.
+export function duckAmbient(ms = 1400): void {
+  const c = ensure();
+  if (!c || !master || !windGain || muted) return;
+  const t = c.currentTime;
+  const g = windGain.gain;
+  g.cancelScheduledValues(t);
+  g.setValueAtTime(g.value, t);
+  g.linearRampToValueAtTime(0.04, t + 0.18);
+  g.linearRampToValueAtTime(0.16, t + ms / 1000);
+  const prevBirds = birdLevel;
+  birdLevel = 0.2;
+  window.setTimeout(() => { birdLevel = prevBirds; }, ms);
+}
+
+// the golden cap's bell — faint, panned by bearing, volume falls with distance.
+// you shouldn't be able to tell where it's from until you're close. that's the
+// pilgrimage: a direction you want to walk toward.
+export function goldBell(pan: number, vol: number): void {
+  const c = ensure();
+  if (!c || !master || muted) return;
+  const t = c.currentTime;
+  const panner = c.createStereoPanner();
+  panner.pan.value = Math.max(-1, Math.min(1, pan));
+  const v = Math.max(0.05, Math.min(1, vol)) * 0.05;
+  for (const [f, d] of [[784, 1.1], [1176, 0.7]] as const) {
+    const o = c.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = f;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(v / (f / 784), t + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.001, t + d);
+    o.connect(g);
+    g.connect(panner);
+    o.start(t);
+    o.stop(t + d + 0.05);
+  }
+  panner.connect(master);
+}
+
+// the end screen reads the basket: one rising note per species you carried
+export function endRise(n: number): void {
+  const c = ensure();
+  if (!c || !master || muted) return;
+  const t = c.currentTime;
+  const notes = [261.63, 311.13, 392.0, 466.16, 523.25, 659.25, 783.99];
+  const k = Math.max(1, Math.min(n, notes.length));
+  for (let i = 0; i < k; i++) {
+    const o = c.createOscillator();
+    o.type = 'triangle';
+    o.frequency.value = notes[i];
+    const g = c.createGain();
+    const t0 = t + 0.15 + i * 0.13;
+    g.gain.setValueAtTime(0.001, t0);
+    g.gain.linearRampToValueAtTime(0.08, t0 + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.7);
+    o.connect(g);
+    g.connect(master);
+    o.start(t0);
+    o.stop(t0 + 0.75);
+  }
+}

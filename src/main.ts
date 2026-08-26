@@ -101,8 +101,8 @@ const G = {
     for (const t of trees) { const d = Math.hypot(t.x - x, t.z - z); if (d < bd) { bd = d; kind = t.kind; } }
     return { kind, d: bd };
   },
-  save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen } }),
-  clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false } }; saveSave(); renderCodex(); },
+  save: () => ({ bestWeight: saved.bestWeight, seen: { ...saved.seen }, deadlyMistakes: saved.deadlyMistakes, bestPerSeed: { ...saved.bestPerSeed } }),
+  clearSave: () => { saved = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false }, deadlyMistakes: 0, bestPerSeed: {} }; saveSave(); renderCodex(); },
   seed: () => forestSeed,
   newWoods: () => newWoods(),
   texDataUrl: () => (window as any).__capCamo.toDataURL('image/png'),
@@ -771,6 +771,7 @@ const yellowMat = new THREE.MeshStandardMaterial({
 
 const shrooms: THREE.Group[] = [];
 const pickMeshes: THREE.Object3D[] = [];
+const goldCaps: THREE.Group[] = [];
 
 function makeMushroom(sp: Species, x: number, y: number, z: number): THREE.Group {
   const def = SPECIES[sp];
@@ -813,6 +814,7 @@ function makeMushroom(sp: Species, x: number, y: number, z: number): THREE.Group
     light.position.y = stemH + 0.08;
     g.add(light);
     g.userData.light = light;
+    goldCaps.push(g);
   }
   g.add(cap);
   g.position.set(x, y, z);
@@ -1157,15 +1159,20 @@ function updateTarget(): void {
 }
 
 // ---------- field notes + persistence ----------
-interface SaveData { bestWeight: number; seen: Record<Species, boolean>; }
+interface SaveData { bestWeight: number; seen: Record<Species, boolean>; deadlyMistakes: number; bestPerSeed: Record<string, number>; }
 const SAVE_KEY = 'caphunt_save_v1';
 function loadSave(): SaveData {
-  const empty: SaveData = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false } };
+  const empty: SaveData = { bestWeight: 0, seen: { champ: false, fly: false, chant: false, trump: false, deadly: false, gold: false }, deadlyMistakes: 0, bestPerSeed: {} };
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return empty;
     const p = JSON.parse(raw) as Partial<SaveData>;
-    return { bestWeight: typeof p.bestWeight === 'number' ? p.bestWeight : 0, seen: { ...empty.seen, ...(p.seen ?? {}) } };
+    return {
+      bestWeight: typeof p.bestWeight === 'number' ? p.bestWeight : 0,
+      seen: { ...empty.seen, ...(p.seen ?? {}) },
+      deadlyMistakes: typeof p.deadlyMistakes === 'number' ? p.deadlyMistakes : 0,
+      bestPerSeed: (p.bestPerSeed ?? {}) as Record<string, number>,
+    };
   } catch { return empty; }
 }
 let saved = loadSave();
@@ -1182,6 +1189,16 @@ function floatText(txt: string, cls: string): void {
   floatsEl.appendChild(d);
   setTimeout(() => d.remove(), 1100);
 }
+// what the field notes say when a species first joins them — the discovery
+// is not the mushroom, it's the forest quietly making room for you to know it
+const NOTE_LINES: Record<Species, string> = {
+  champ: 'Champignon. Honest. It grows where it wants and it wants everywhere.',
+  fly: 'Fly Agaric. Red and rude. The birches keep it for some reason.',
+  chant: 'Chanterelle. The forest says it likes pines. The forest is rarely wrong.',
+  trump: 'Black Trumpet. Worth the dig. It pays you back in deep, quiet notes.',
+  deadly: 'Deadly White. Your field notes are learning. So is this one.',
+  gold: 'The Golden Cap. You were supposed to find it by walking, not by luck.',
+};
 function doPickAction(): void {
   if (G.mode !== 'play' || !targetShroom) return;
   punchT = 1;
@@ -1209,7 +1226,15 @@ function doPickAction(): void {
   G.basket[def.name] = (G.basket[def.name] ?? 0) + 1;
   G.weight = Math.max(0, G.weight + def.val);
   if (def.gold) G.goldenFound++;
-  if (def.bad) G.badPicks++;
+  if (def.bad) {
+    G.badPicks++;
+    // the forest remembers your mistakes — three and the codex learns to warn you
+    if (sp === 'deadly' && saved.deadlyMistakes < 3) {
+      saved.deadlyMistakes++;
+      saveSave();
+      if (saved.deadlyMistakes >= 3) renderCodex();
+    }
+  }
   SFX.pickSfx(def.gold ? 'gold' : def.bad ? 'bad' : 'good');
   if (def.gold) { SFX.chime(3); floatText('✦ THE GOLDEN CAP  +25g', 'gold'); }
   else if (def.bad) floatText(`${def.name}  +${def.val}g (it's a bit slimy…)`, 'bad');
@@ -1217,8 +1242,10 @@ function doPickAction(): void {
   if (!saved.seen[sp]) {
     saved.seen[sp] = true;
     saveSave();
-    floatText(`◆ new — ${def.name} added to your field notes`, 'gold');
-    if (def.gold) SFX.chime(5); else SFX.chime(1);
+    SFX.duckAmbient(1500);
+    floatText(`◆ ${def.name} added to your field notes`, 'gold');
+    floatText(NOTE_LINES[sp], 'note');
+    if (def.gold) SFX.chime(5); else SFX.chime(2);
   }
   updateHud();
   if (G.weight >= G.goal) endGame();
@@ -1250,11 +1277,16 @@ function endGame(): void {
   if (G.mode === 'end') return;
   G.mode = 'end';
   SFX.gong();
+  SFX.endRise(Object.keys(G.basket).length); // the screen reads the basket, note by note
   document.body.classList.add('menu');
   if (document.pointerLockElement) document.exitPointerLock();
   const timeUsed = 150 - Math.max(0, G.timeLeft);
   const newBest = G.weight > saved.bestWeight;
   if (newBest) { saved.bestWeight = G.weight; saveSave(); }
+  // the forest is yours: these woods keep their own record of your best basket here
+  const forestBest = saved.bestPerSeed[String(forestSeed)] ?? 0;
+  const newForestBest = G.weight > forestBest;
+  if (newForestBest) { saved.bestPerSeed[String(forestSeed)] = G.weight; saveSave(); }
   let rating: string;
   let sub: string;
   if (G.weight >= G.goal && G.badPicks === 0) { rating = 'FORAGER OF GODS'; sub = 'a full basket, not one slimy surprise. the forest bows.'; }
@@ -1274,6 +1306,16 @@ function endGame(): void {
     <div class="endStat"><div class="v">${G.goldenFound}/4</div><div class="l">golden caps</div></div>
     <div class="endStat"><div class="v">${saved.bestWeight}g</div><div class="l">${newBest ? '★ new best basket' : 'best basket'}</div></div>` +
     (rows ? `<div class="endStat basketRows">${rows}</div>` : '');
+  // ghost bar: where your best-in-these-woods stands, vs this run
+  const top = Math.max(G.goal, forestBest, G.weight, 1) * 1.06;
+  const ghost = document.getElementById('endGhost')!;
+  ghost.innerHTML = `<div class="gtrack"><div class="gfill"></div>` +
+    (forestBest > 0 ? `<div class="gghost" style="left:${(forestBest / top) * 100}%"></div>` : '') + `</div>
+    <div class="glabel">${newForestBest ? '★ best basket in these woods' : forestBest > 0 ? `best in these woods  ${forestBest}g` : 'your first basket in these woods'}</div>`;
+  requestAnimationFrame(() => {
+    const f = ghost.querySelector('.gfill') as HTMLElement;
+    requestAnimationFrame(() => { f.style.width = `${(G.weight / top) * 100}%`; });
+  });
   endEl.style.display = 'flex';
   updateHud();
 }
@@ -1286,7 +1328,10 @@ function renderCodex(): void {
     const def = SPECIES[sp];
     if (saved.seen[sp]) {
       const cls = sp === 'gold' ? 'citem goldSeen' : 'citem';
-      return `<div class="${cls}"><span>${sp === 'gold' ? '✦ ' : ''}${def.name}<b>+${def.val}g</b></span><i>${def.host}</i></div>`;
+      // after three lifetime deadlies, the notes stop just listing it and start warning
+      const warn = (sp === 'deadly' && saved.deadlyMistakes >= 3)
+        ? '<em class="cwarn">…the white ones bite back. check the ring on the stem.</em>' : '';
+      return `<div class="${cls}"><span>${sp === 'gold' ? '✦ ' : ''}${def.name}<b>+${def.val}g</b></span><i>${def.host}</i>${warn}</div>`;
     }
     return `<div class="citem undis"><span>???</span><i>${def.host}</i></div>`;
   }).join('');
@@ -1470,6 +1515,7 @@ function updateMove(dt: number): void {
 document.body.classList.add('menu');
 const clock = new THREE.Clock();
 let tAcc = 0;
+let bellTimer = 2.8; // the golden cap's bell, first ring
 function animate(): void {
   requestAnimationFrame(animate);
   const rawDt = Math.min(clock.getDelta(), 0.05);
@@ -1532,6 +1578,34 @@ function animate(): void {
     G.timeLeft -= dt;
     if (G.timeLeft <= 0) { G.timeLeft = 0; endGame(); }
     applyLight(1 - G.timeLeft / 150);
+    // the golden pilgrimage: the surviving caps breathe, and a faint bell rings
+    // from their bearing — you can't hear where it's from until you're close,
+    // but the pan tells you which way to walk
+    for (const gc of goldCaps) {
+      const gl = gc.userData.light as THREE.PointLight | undefined;
+      if (gl) gl.intensity = 0.5 + 0.28 * (0.5 + 0.5 * Math.sin(t * 2.1 + (gc.userData.phase as number)));
+    }
+    if (goldCaps.length) {
+      let best: THREE.Group | null = null;
+      let bd = 1e9;
+      for (const gc of goldCaps) {
+        const d = Math.hypot(gc.position.x - player.x, gc.position.z - player.z);
+        if (d < bd) { bd = d; best = gc; }
+      }
+      if (best) {
+        const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+        const dx = best.position.x - player.x, dz = best.position.z - player.z;
+        const len = Math.max(0.001, Math.hypot(dx, dz));
+        const cross = fx * (dz / len) - fz * (dx / len);
+        const dot = fx * (dx / len) + fz * (dz / len);
+        const rel = Math.atan2(cross, dot);
+        bellTimer -= dt;
+        if (bellTimer <= 0) {
+          SFX.goldBell(THREE.MathUtils.clamp(rel * 1.15, -1, 1), THREE.MathUtils.clamp(1 - bd / 30, 0.06, 1));
+          bellTimer = 2.4 + Math.random() * 1.6;
+        }
+      }
+    }
     // head bob
     const bobY = Math.sin(walkPhase * 2) * 0.024 * moveAmount;
     const bobX = Math.cos(walkPhase) * 0.014 * moveAmount;
