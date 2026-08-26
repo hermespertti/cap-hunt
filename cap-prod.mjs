@@ -200,6 +200,23 @@ await new Promise(r => setTimeout(r, 700));
   ok('legs visible looking down (v0.7.1)', (await page.evaluate(() => window.__cap.state())).legs > 0.9);
 }
 
+{
+  // v0.8 weighted movement: speed ramps (not instant), decays when released,
+  // and the FOV widens with speed — the "feel" regressions the probe catches
+  const rest0 = await page.evaluate(() => window.__cap.state());
+  ok('fov at rest (v0.8)', Math.abs(rest0.fov - 68) < 1.5, `fov=${rest0.fov}`);
+  await page.evaluate(() => window.__cap.keys('KeyW', true));
+  await new Promise(r => setTimeout(r, 1600));
+  const run = await page.evaluate(() => window.__cap.state());
+  ok('run reaches speed (v0.8)', run.speed > 4.3, `speed=${run.speed}`);
+  ok('fov widens at run speed (v0.8)', run.fov > 71, `fov=${run.fov}`);
+  await page.evaluate(() => window.__cap.keys('KeyW', false));
+  await new Promise(r => setTimeout(r, 1300));
+  const stopped = await page.evaluate(() => window.__cap.state());
+  ok('friction: speed decays to 0 (v0.8)', stopped.speed < 0.3, `speed=${stopped.speed}`);
+  ok('fov recovers to rest (v0.8)', Math.abs(stopped.fov - 68) < 1.5, `fov=${stopped.fov}`);
+}
+
 // 10. v0.6 perf guard: instanced rendering must keep the scene lean —
 //    2,700+ draw calls in v0.5 dropped to ~75; a regression back to
 //    per-mesh rendering would blow well past 200

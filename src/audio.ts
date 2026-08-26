@@ -201,6 +201,29 @@ export function pickSfx(kind: 'good' | 'gold' | 'bad'): void {
   }
 }
 
+export function jumpWhoosh(): void {
+  // short filtered rising "huff" — the breath of a jump
+  const c = ensure();
+  if (!c || !master || muted) return;
+  const t = c.currentTime;
+  const src = c.createBufferSource();
+  src.buffer = noiseBuffer(c, 0.18);
+  const bp = c.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.Q.value = 1.4;
+  bp.frequency.setValueAtTime(300, t);
+  bp.frequency.exponentialRampToValueAtTime(900, t + 0.14);
+  const g = c.createGain();
+  g.gain.setValueAtTime(0.0, t);
+  g.gain.linearRampToValueAtTime(0.05, t + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+  src.connect(bp);
+  bp.connect(g);
+  g.connect(master);
+  src.start(t);
+  src.stop(t + 0.18);
+}
+
 export function thud(): void {
   const c = ensure();
   if (!c || !master || muted) return;

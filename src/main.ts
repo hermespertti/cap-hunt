@@ -31,6 +31,7 @@ let _frameT0 = 0;
     basket: { ...G.basket }, target: G.targetName, x: player.x, z: player.z,
     y: player.y, yaw: player.yaw, pitch: player.pitch,
     crouch: crouchT, vy, airborne: airborneNow, legs: +legAlpha.toFixed(3),
+    speed: +Math.hypot(vel.x, vel.z).toFixed(2), fov: +camera.fov.toFixed(1),
   }),
   keys: (k: string, down: boolean) => {
     if (down) keys.add(k); else keys.delete(k);
@@ -1909,6 +1910,8 @@ function formatTime(s: number): string {
 function endGame(): void {
   if (G.mode === 'end') return;
   G.mode = 'end';
+  camera.fov = FOV_BASE;
+  camera.updateProjectionMatrix();
   SFX.gong();
   SFX.endRise(Object.keys(G.basket).length); // the screen reads the basket, note by note
   document.body.classList.add('menu');
@@ -1985,6 +1988,8 @@ function startGame(): void {
   if (G.started) return;
   G.started = true;
   G.mode = 'play';
+  vel.x = 0; vel.z = 0;
+  landKick = 0; jumpKeyHeld = false;
   saved.lastSeen = nowMs();
   saveSave();
   titleEl.style.display = 'none';
@@ -2108,7 +2113,14 @@ renderer.domElement.addEventListener('pointerup', endTouch);
 renderer.domElement.addEventListener('pointercancel', endTouch);
 
 // ---------- movement ----------
+// Weighted: you accelerate into a move, carry momentum into turns, and can
+// steer mid-air — a jump no longer halts you dead, and landing has mass.
 const WALK = 3.1, RUN = 5.0;
+const GROUND_ACCEL = 14, GROUND_FRICTION = 10, AIR_ACCEL = 8;
+const FOV_BASE = 68, FOV_RUN = 74;
+const vel = { x: 0, z: 0 };
+let jumpKeyHeld = false; // true only for jumps launched from the held Space key
+let landKick = 0; // landing camera dip (negative pitch), decays in updateMove
 function updateMove(dt: number): void {
   const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
@@ -2118,45 +2130,67 @@ function updateMove(dt: number): void {
   if (keys.has('KeyD') || keys.has('ArrowRight')) dir.add(right);
   if (keys.has('KeyA') || keys.has('ArrowLeft')) dir.sub(right);
   if (joyX !== 0 || joyY !== 0) { dir.addScaledVector(fwd, -joyY); dir.addScaledVector(right, joyX); }
+  const running = keys.has('ShiftLeft') || keys.has('ShiftRight');
   const wantCrouch = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC');
   crouchT = THREE.MathUtils.damp(crouchT, wantCrouch ? 1 : 0, 14, dt);
   const grounded = player.y - (groundH(player.x, player.z) + (onBoard(player.x, player.z) ? boardTop : 0)) <= 0.02 && vy <= 0.0001;
-  const moving = dir.lengthSq() > 0 && grounded;
-  moveAmount = THREE.MathUtils.damp(moveAmount, moving ? 1 : 0, 8, dt);
-  if (moving) {
+  const crouchMul = 1 - 0.55 * crouchT;
+  if (dir.lengthSq() > 0.0001) {
     dir.normalize();
-    const crouchMul = 1 - 0.55 * crouchT;
-    const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight') ? RUN : WALK) * crouchMul;
-    let nx = player.x + dir.x * speed * dt;
-    let nz = player.z + dir.z * speed * dt;
-    // collision: push out of circles (skipped while airborne — you clear low stuff)
     if (grounded) {
-      for (const o of obstacles) {
-        const dx = nx - o.x, dz = nz - o.z;
-        const d = Math.hypot(dx, dz);
-        const min = o.r + 0.26;
-        if (d < min && d > 0.0001) {
-          nx = o.x + (dx / d) * min;
-          nz = o.z + (dz / d) * min;
-        }
+      const speed = (running ? RUN : WALK) * crouchMul;
+      vel.x = THREE.MathUtils.damp(vel.x, dir.x * speed, GROUND_ACCEL, dt);
+      vel.z = THREE.MathUtils.damp(vel.z, dir.z * speed, GROUND_ACCEL, dt);
+    } else {
+      // air control: steer, don't teleport — momentum carries
+      vel.x += dir.x * AIR_ACCEL * dt;
+      vel.z += dir.z * AIR_ACCEL * dt;
+      const hv = Math.hypot(vel.x, vel.z);
+      const cap = RUN * 1.06;
+      if (hv > cap) { vel.x *= cap / hv; vel.z *= cap / hv; }
+    }
+  } else {
+    const rate = grounded ? GROUND_FRICTION : 1.2;
+    vel.x = THREE.MathUtils.damp(vel.x, 0, rate, dt);
+    vel.z = THREE.MathUtils.damp(vel.z, 0, rate, dt);
+  }
+  let nx = player.x + vel.x * dt;
+  let nz = player.z + vel.z * dt;
+  // collision: push out of circles (skipped while airborne — you clear low stuff)
+  if (grounded) {
+    for (const o of obstacles) {
+      const dx = nx - o.x, dz = nz - o.z;
+      const d = Math.hypot(dx, dz);
+      const min = o.r + 0.26;
+      if (d < min && d > 0.0001) {
+        nx = o.x + (dx / d) * min;
+        nz = o.z + (dz / d) * min;
       }
     }
-    nx = Math.max(-46, Math.min(46, nx));
-    nz = Math.max(-46, Math.min(46, nz));
-    // footsteps
-    stepAcc += speed * dt;
-    const stride = (keys.has('ShiftLeft') || keys.has('ShiftRight')) ? 0.62 : 0.46;
-    if (stepAcc > stride) {
-      stepAcc = 0;
-      const onB = onBoard(nx, nz);
-      SFX.footstep(onB ? 0.5 : 1);
-      if (onB && Math.random() < 0.12) SFX.creak();
-    }
-    walkPhase += (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 11 : 8) * dt * crouchMul;
-    player.x = nx;
-    player.z = nz;
   }
-  // vertical: terrain (or boardwalk) is the floor; Space launches when planted
+  nx = Math.max(-46, Math.min(46, nx));
+  nz = Math.max(-46, Math.min(46, nz));
+  // gait and footsteps track real speed, not the key
+  const velMag = Math.hypot(vel.x, vel.z);
+  stepAcc += velMag * dt;
+  const stride = 0.46 * THREE.MathUtils.clamp(velMag / WALK, 0.7, 1.4);
+  if (stepAcc > stride) {
+    stepAcc = 0;
+    const onB = onBoard(nx, nz);
+    SFX.footstep(onB ? 0.5 : 1);
+    if (onB && Math.random() < 0.12) SFX.creak();
+  }
+  walkPhase += (velMag / WALK) * 8 * dt * (1 - 0.2 * crouchT);
+  player.x = nx;
+  player.z = nz;
+  moveAmount = THREE.MathUtils.damp(moveAmount, THREE.MathUtils.clamp(velMag / RUN, 0, 1), 8, dt);
+  // speed FOV: the world widens as you run up to speed
+  const fovT = FOV_BASE + (FOV_RUN - FOV_BASE) * THREE.MathUtils.clamp((velMag - WALK * 0.85) / (RUN - WALK * 0.85), 0, 1);
+  camera.fov = THREE.MathUtils.damp(camera.fov, fovT, 6, dt);
+  landKick = THREE.MathUtils.damp(landKick, 0, 7, dt);
+  // vertical: terrain (or boardwalk) is the floor; Space launches when planted.
+  // Variable height: releasing Space early cuts the rise short — taps hop,
+  // full hold launches. Landing has mass: the camera dips with the impact.
   const gy = groundH(player.x, player.z) + (onBoard(player.x, player.z) ? boardTop : 0);
   const onGround = player.y - gy <= 0.02 && vy <= 0.0001;
   airborneNow = !onGround;
@@ -2164,15 +2198,24 @@ function updateMove(dt: number): void {
     player.y = THREE.MathUtils.damp(player.y, gy, 10, dt);
     if (Math.abs(player.y - gy) < 0.004) player.y = gy;
     vy = 0;
-    if (keys.has('Space')) vy = JUMP_V;
+    if (keys.has('Space')) {
+      vy = JUMP_V;
+      jumpKeyHeld = true;
+      SFX.jumpWhoosh();
+    }
   } else {
+    if (jumpKeyHeld && !keys.has('Space') && vy > 1.3) vy = 1.3; // jump cut
     vy -= GRAV * dt;
     player.y += vy * dt;
     if (player.y <= gy) {
       player.y = gy;
       const impact = -vy;
       vy = 0;
-      if (impact > 1.6) SFX.thud();
+      jumpKeyHeld = false; // landed — the next jump must re-arm the cut
+      if (impact > 1.6) {
+        SFX.thud();
+        landKick = -THREE.MathUtils.clamp(impact - 3.4, 0.05, 0.22) * 0.16;
+      }
     }
   }
   // first-person legs: knee-bent gait, tucked when crouched, folded mid-air
@@ -2287,7 +2330,8 @@ function animate(): void {
     camera.position.set(player.x + bobX * Math.cos(player.yaw), player.y + eyeH() + bobY, player.z);
     camera.rotation.set(0, 0, 0);
     camera.rotateY(player.yaw + Math.sin(walkPhase) * 0.004 * moveAmount);
-    camera.rotateX(player.pitch);
+    camera.rotateX(player.pitch + landKick);
+    if (Math.abs(camera.fov - FOV_BASE) > 0.05) camera.updateProjectionMatrix();
   } else if (G.mode === 'pause' || G.mode === 'end') {
     camera.position.set(player.x, player.y + eyeH(), player.z);
     camera.rotation.set(0, 0, 0);
