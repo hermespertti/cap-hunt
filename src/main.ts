@@ -1691,19 +1691,19 @@ const bootMat = new THREE.MeshStandardMaterial({ color: 0x2e2620, roughness: 1 }
 // base forward lean of the whole leg (hip rotation.x, + swings it forward).
 // the visible leg leans forward-down so the WHOLE leg (knee→boot) lands in the
 // bottom third of the frame at eye level — the HL1 stance
-const LEG_TILT = 0.65;
-// base KNEE flex at rest (shin rotation.x). small positive: keeps the boot
-// just inside the bottom edge; the gait and crouch swing it back and under
-const LEG_FLEX = 0.05;
+const LEG_TILT = 0.52;
+// base KNEE flex at rest (shin rotation.x). 0 at rest: the gait, crouch and
+// tuck swing the boot back and under from here
+const LEG_FLEX = 0.0;
 let legAlpha = 1; // viewmodel visibility — constant 1 now (HL-style, no fade)
 const legs: { hip: THREE.Group; shin: THREE.Mesh }[] = [];
 for (const side of [1, -1]) {
-  // knee pivot close to the lens and just below the axis: at eye level the
-  // knee sits at ~-0.64 NDC (bottom third) and the boot at the very bottom
-  // edge — the whole leg always in frame, HL1-style. camera children are
-  // pitch-locked in frame, so this placement IS the always-on view.
+  // knee pivot below the axis, close to the lens: at eye level the knee sits
+  // at ~-0.52 NDC (bottom third) and the boot right at the bottom edge — the
+  // whole leg always in frame, ~28% of frame height, HL1 proportions.
+  // camera children are pitch-locked in frame, so this IS the always-on view.
   const hip = new THREE.Group();
-  hip.position.set(0.12 * side, -0.13, -0.30);
+  hip.position.set(0.12 * side, -0.172, -0.49);
   hip.rotation.x = LEG_TILT;
   const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.5, 8), pantsMat);
   shin.position.y = -0.25;
