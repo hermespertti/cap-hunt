@@ -3,6 +3,7 @@
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let windGain: GainNode | null = null;
+let windLP: BiquadFilterNode | null = null;
 let birdTimer: number | null = null;
 let muted = false;
 let birdLevel = 1;
@@ -48,6 +49,7 @@ export function startAmbient(): void {
   lp.type = 'lowpass';
   lp.frequency.value = 380;
   lp.Q.value = 0.4;
+  windLP = lp;
   windGain = c.createGain();
   windGain.gain.value = 0.16;
   // slow gusts
@@ -253,6 +255,68 @@ export function thud(): void {
   lp.connect(ng);
   ng.connect(master);
   src.start(t);
+}
+
+export function heartbeat(strength: number): void {
+  // a distant, low lub-dub — the forest's pulse as the light fails.
+  // strength: 0..1, it gets louder and closer as the run runs out
+  const c = ensure();
+  if (!c || !master || muted) return;
+  const m = master;
+  const t = c.currentTime;
+  const thump = (t0: number, v: number): void => {
+    const o = c.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(58, t0);
+    o.frequency.exponentialRampToValueAtTime(38, t0 + 0.11);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(v, t0 + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.13);
+    o.connect(g);
+    g.connect(m);
+    o.start(t0);
+    o.stop(t0 + 0.15);
+  };
+  thump(t, 0.13 * strength);
+  thump(t + 0.19, 0.085 * strength);
+}
+
+export function finaleSting(): void {
+  // the moment the light starts failing: a low, long, unresolved swell —
+  // a drop of pressure, not a note. it says "something ended," not "time's up."
+  const c = ensure();
+  if (!c || !master || muted) return;
+  const m = master;
+  const t = c.currentTime;
+  for (const [f0, f1, v, d] of [[146.83, 65.41, 0.11, 3.4], [220, 110, 0.05, 2.6], [493.88, 246.94, 0.02, 1.8]] as const) {
+    const o = c.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(f1, t + d);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(v, t + 0.5);
+    g.gain.exponentialRampToValueAtTime(0.001, t + d);
+    o.connect(g);
+    g.connect(m);
+    o.start(t);
+    o.stop(t + d + 0.1);
+  }
+}
+
+// the wind is the forest's breathing — the finale leaves it alone, and it takes
+// over. s: 0 calm, 1 storm. the lowpass opens, the volume swells, gusts deepen.
+export function setWindSurge(s: number): void {
+  const c = ensure();
+  if (!c || !master || !windGain || !windLP) return;
+  const t = c.currentTime;
+  windGain.gain.cancelScheduledValues(t);
+  windGain.gain.setValueAtTime(windGain.gain.value, t);
+  windGain.gain.linearRampToValueAtTime(0.16 + s * 0.3, t + 1.6);
+  windLP.frequency.cancelScheduledValues(t);
+  windLP.frequency.setValueAtTime(windLP.frequency.value, t);
+  windLP.frequency.linearRampToValueAtTime(380 + s * 520, t + 1.6);
 }
 
 export function gong(): void {

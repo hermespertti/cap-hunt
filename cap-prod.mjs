@@ -226,6 +226,33 @@ await new Promise(r => setTimeout(r, 700));
   ok('fov recovers to rest (v0.8)', Math.abs(stopped.fov - 68) < 1.5, `fov=${stopped.fov}`);
 }
 
+{
+  // v0.9 the finale: at 20s the light FAILS — fog to point-blank, vignette up,
+  // birds silenced, bell loses bearing; before that, nothing changes
+  const t0 = await page.evaluate(() => window.__cap.state().timeLeft);
+  if (t0 > 24) await page.evaluate((d) => window.__cap.skipTime(d), t0 - 22);
+  await new Promise(r => setTimeout(r, 400));
+  let s = await page.evaluate(() => window.__cap.state());
+  ok('no finale above 20s (v0.9)', s.finale === false && s.timeLeft > 20, `timeLeft=${s.timeLeft} finale=${s.finale}`);
+  const vigEarly = await page.evaluate(() => document.getElementById('vignette').style.opacity);
+  ok('vignette hidden early (v0.9)', vigEarly === '0', `opacity=${vigEarly}`);
+  const fogEarly = s.fogFar;
+  await page.evaluate((d) => window.__cap.skipTime(d), 13); // deep into the finale
+  await new Promise(r => setTimeout(r, 500));
+  s = await page.evaluate(() => window.__cap.state());
+  ok('finale trips at 20s (v0.9)', s.finale === true, `timeLeft=${s.timeLeft} finale=${s.finale}`);
+  ok('fog tightens in the finale (v0.9)', s.fogFar < fogEarly - 5, `early=${fogEarly} now=${s.fogFar}`);
+  const vigMid = await page.evaluate(() => parseFloat(document.getElementById('vignette').style.opacity || '0'));
+  ok('vignette rises in the finale (v0.9)', vigMid > 0.3, `opacity=${vigMid}`);
+  await page.evaluate(() => window.__cap.skipTime(500));
+  await new Promise(r => setTimeout(r, 400));
+  s = await page.evaluate(() => window.__cap.state());
+  ok('point-blank fog when the light dies (v0.9)', s.fogFar < 13, `fogFar=${s.fogFar}`);
+  await page.evaluate(() => window.__cap.skipTime(500));
+  await new Promise(r => setTimeout(r, 400));
+  ok('run ends at zero light (v0.9)', (await page.evaluate(() => window.__cap.state())).mode === 'end');
+}
+
 // 10. v0.6 perf guard: instanced rendering must keep the scene lean —
 //    2,700+ draw calls in v0.5 dropped to ~75; a regression back to
 //    per-mesh rendering would blow well past 200

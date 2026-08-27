@@ -10,6 +10,7 @@ const G = {
   weight: 0,
   goal: 100,
   timeLeft: 150,
+  finale: false,
   picks: 0,
   badPicks: 0,
   basket: {} as Record<string, number>,
@@ -32,6 +33,7 @@ let _frameT0 = 0;
     y: player.y, yaw: player.yaw, pitch: player.pitch,
     crouch: crouchT, vy, airborne: airborneNow, legs: +legAlpha.toFixed(3),
     speed: +Math.hypot(vel.x, vel.z).toFixed(2), fov: +camera.fov.toFixed(1),
+    finale: G.finale, fogFar: +fog.far.toFixed(1),
   }),
   keys: (k: string, down: boolean) => {
     if (down) keys.add(k); else keys.delete(k);
@@ -206,32 +208,39 @@ sun.position.set(6, 14, 4);
 scene.add(sun);
 
 // the light is the timer: as timeLeft drains, the forest closes — fog tightens,
-// the sky cools, the sun warms and falls, and (audio) the birds go quiet
+// the sky cools, the sun warms and falls, and (audio) the birds go quiet —
+// and in the last stretch the light FAILS: fog to point-blank, sky to night,
+// the wind left alone
 const skyDay = new THREE.Color(0x9fa8ad);
 const skyDusk = new THREE.Color(0x5f6771);
+const skyNight = new THREE.Color(0x39414d);
 const sky = new THREE.Color(0x9fa8ad);
 const sunDay = new THREE.Color(0xf2ede2);
 const sunDusk = new THREE.Color(0xd99a62);
 const sunCol = new THREE.Color(0xf2ede2);
 let lightApplied = -1;
+let lightAppliedF = -1;
 function applyLight(t: number): void {
   // t: 0 at run start, 1 at the end. Hold the day for the first 55%, then close in.
   const k = THREE.MathUtils.smoothstep(t, 0.45, 1);
-  fog.near = 12 - k * 6;
-  fog.far = 56 - k * 36;
-  sky.copy(skyDay).lerp(skyDusk, k);
+  // the finale: the last 10% — the light fails
+  const f = THREE.MathUtils.smoothstep(t, 0.9, 1);
+  fog.near = 12 - k * 6 - f * 2;
+  fog.far = 56 - k * 36 - f * 9;
+  sky.copy(skyDay).lerp(skyDusk, k).lerp(skyNight, f);
   scene.background = sky;
   fog.color.copy(sky);
-  hemi.intensity = 1.05 - k * 0.38;
-  sun.intensity = 0.75 - k * 0.45;
+  hemi.intensity = 1.05 - k * 0.38 - f * 0.22;
+  sun.intensity = 0.75 - k * 0.45 - f * 0.2;
   sunCol.copy(sunDay).lerp(sunDusk, k);
   sun.color = sunCol;
-  renderer.toneMappingExposure = 1.05 - k * 0.2;
-  // birds fall silent in the last stretch
-  const birds = THREE.MathUtils.clamp(1 - THREE.MathUtils.smoothstep(t, 0.72, 0.95) * 0.85, 0.15, 1);
+  renderer.toneMappingExposure = 1.05 - k * 0.2 - f * 0.12;
+  // birds fall silent in the last stretch — and the failing light silences them
+  const birds = THREE.MathUtils.clamp(1 - THREE.MathUtils.smoothstep(t, 0.72, 0.95) * 0.85, 0.15, 1) * (1 - f);
   SFX.setBirdLevel(birds);
-  if (Math.abs(k - lightApplied) < 0.004 && lightApplied >= 0) return;
+  if (Math.abs(k - lightApplied) < 0.004 && Math.abs(f - lightAppliedF) < 0.004 && lightApplied >= 0) return;
   lightApplied = k;
+  lightAppliedF = f;
 }
 
 // ---------- canvas texture helpers ----------
@@ -1991,6 +2000,9 @@ function startGame(): void {
   G.mode = 'play';
   vel.x = 0; vel.z = 0;
   landKick = 0; jumpKeyHeld = false;
+  finaleFired = false; G.finale = false; heartbeatAcc = 0;
+  SFX.setWindSurge(0);
+  if (vigEl) vigEl.style.opacity = '0';
   saved.lastSeen = nowMs();
   saveSave();
   titleEl.style.display = 'none';
@@ -2119,6 +2131,41 @@ renderer.domElement.addEventListener('pointercancel', endTouch);
 const WALK = 3.1, RUN = 5.0;
 const GROUND_ACCEL = 14, GROUND_FRICTION = 10, AIR_ACCEL = 8;
 const FOV_BASE = 68, FOV_RUN = 74;
+
+// ---------- the finale: the last stretch, the light fails ----------
+// When the clock crosses FINALE_AT the run stops being "a forest at dusk" and
+// becomes "a forest losing its light." A deep sting, the wind left alone, a
+// heartbeat that quickens as the seconds run out, and the vignette closing in.
+const FINALE_AT = 20;
+let finaleFired = false;
+let heartbeatAcc = 0;
+const vigEl = document.getElementById('vignette') as HTMLElement | null;
+function driveFinale(dt: number): void {
+  if (!finaleFired && G.timeLeft <= FINALE_AT) {
+    finaleFired = true;
+    G.finale = true;
+    SFX.finaleSting();
+    SFX.setWindSurge(1);
+    heartbeatAcc = 0.4;
+  }
+  if (!G.finale) {
+    if (vigEl) vigEl.style.opacity = '0';
+    return;
+  }
+  // urgency: 0 the moment the finale trips, 1 as the clock hits zero
+  const urgency = THREE.MathUtils.clamp(1 - G.timeLeft / FINALE_AT, 0, 1);
+  // heartbeat accelerates 1.05s -> 0.5s and swells as the light dies
+  heartbeatAcc -= dt;
+  if (heartbeatAcc <= 0) {
+    heartbeatAcc = 1.05 - urgency * 0.55;
+    SFX.heartbeat(0.45 + urgency * 0.55);
+  }
+  // vignette breathes with the heartbeat and closes as time runs out
+  if (vigEl) {
+    const pulse = 0.5 + 0.5 * Math.sin(heartbeatAcc * Math.PI / (1.05 - urgency * 0.55));
+    vigEl.style.opacity = String(0.35 + urgency * 0.5 + pulse * 0.08);
+  }
+}
 const vel = { x: 0, z: 0 };
 let jumpKeyHeld = false; // true only for jumps launched from the held Space key
 let landKick = 0; // landing camera dip (negative pitch), decays in updateMove
@@ -2298,6 +2345,7 @@ function animate(): void {
     G.timeLeft -= dt;
     if (G.timeLeft <= 0) { G.timeLeft = 0; endGame(); }
     applyLight(1 - G.timeLeft / 150);
+    driveFinale(dt);
     // the golden pilgrimage: the surviving caps breathe, and a faint bell rings
     // from their bearing — you can't hear where it's from until you're close,
     // but the pan tells you which way to walk
@@ -2318,9 +2366,12 @@ function animate(): void {
         const cross = fx * (dz / len) - fz * (dx / len);
         const dot = fx * (dx / len) + fz * (dz / len);
         const rel = Math.atan2(cross, dot);
+        // the finale: as the light dies, the bell loses its bearing — direction
+        // flattens out until it comes from everywhere and nowhere
+        const dir = G.timeLeft <= FINALE_AT ? Math.max(0, G.timeLeft / FINALE_AT) : 1;
         bellTimer -= dt;
         if (bellTimer <= 0) {
-          SFX.goldBell(THREE.MathUtils.clamp(rel * 1.15, -1, 1), THREE.MathUtils.clamp(1 - bd / 30, 0.06, 1));
+          SFX.goldBell(THREE.MathUtils.clamp(rel * 1.15 * dir, -1, 1), THREE.MathUtils.clamp(1 - bd / 30, 0.06, 1));
           bellTimer = 2.4 + Math.random() * 1.6;
         }
       }
