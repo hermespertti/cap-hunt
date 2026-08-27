@@ -1675,36 +1675,40 @@ function updateArm(dt: number, t: number): void {
   }
 }
 
-// ---------- the legs (first-person) ----------
-// camera children sit at a FIXED angle below the camera axis (pitch never
-// moves them in-frame), so the legs are placed forward-down to land in the
-// lower frame: knee pivot ~19deg below the axis, the shin tilted forward so
-// the boot rests near the bottom edge. dark pants + chunky boots read against
-// the olive ground. the gait is driven by the same walkPhase as the arm and
-// head bob; crouching folds them under, jumping tucks the knees up.
+// ---------- the legs (first-person, Half-Life style) ----------
+// The legs are SOLID — no pitch fade, no pop-in. The hip sits BELOW the
+// camera axis and close to the lens, so at eye level the knees rest just
+// under the bottom frame corners and the boots hang off-frame; pitching down
+// swings the shins and boots into the lower frame. They are "just there"
+// whenever you look down, like HL1's first-person legs. The gait is driven
+// by the same walkPhase as the arm and head bob; crouching folds them under,
+// jumping tucks the knees up.
 const legsGroup = new THREE.Group();
 camera.add(legsGroup);
 
-const pantsMat = new THREE.MeshStandardMaterial({ map: camoTex, color: 0x6f6f52, roughness: 1, transparent: true, opacity: 0 });
-const bootMat = new THREE.MeshStandardMaterial({ color: 0x2e2620, roughness: 1, transparent: true, opacity: 0 });
-// base forward lean of the whole leg (hip rotation.x, + swings it forward)
-const LEG_TILT = 0.66;
-// base KNEE flex at rest (shin rotation.x). NEGATIVE pulls the boot back and
-// up — a real knee folds backward, never kicks the boot forward. small, so
-// the boot rests right at the frame's bottom edge and steps in/out on the gait
-const LEG_FLEX = -0.05;
-const legMats = [pantsMat, bootMat];
-let legAlpha = 0; // pitch-driven viewmodel fade (see animate loop)
+const pantsMat = new THREE.MeshStandardMaterial({ map: camoTex, color: 0x6f6f52, roughness: 1 });
+const bootMat = new THREE.MeshStandardMaterial({ color: 0x2e2620, roughness: 1 });
+// base forward lean of the whole leg (hip rotation.x, + swings it forward).
+// the visible leg leans forward-down so the WHOLE leg (knee→boot) lands in the
+// bottom third of the frame at eye level — the HL1 stance
+const LEG_TILT = 0.65;
+// base KNEE flex at rest (shin rotation.x). small positive: keeps the boot
+// just inside the bottom edge; the gait and crouch swing it back and under
+const LEG_FLEX = 0.05;
+let legAlpha = 1; // viewmodel visibility — constant 1 now (HL-style, no fade)
 const legs: { hip: THREE.Group; shin: THREE.Mesh }[] = [];
 for (const side of [1, -1]) {
-  // knee pivot ~19deg below the camera axis; boot lands near the bottom edge
+  // knee pivot close to the lens and just below the axis: at eye level the
+  // knee sits at ~-0.64 NDC (bottom third) and the boot at the very bottom
+  // edge — the whole leg always in frame, HL1-style. camera children are
+  // pitch-locked in frame, so this placement IS the always-on view.
   const hip = new THREE.Group();
-  hip.position.set(0.13 * side, -0.20, -0.58);
+  hip.position.set(0.12 * side, -0.13, -0.30);
   hip.rotation.x = LEG_TILT;
-  const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.46, 8), pantsMat);
-  shin.position.y = -0.23;
+  const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.5, 8), pantsMat);
+  shin.position.y = -0.25;
   const boot = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.09, 0.28), bootMat);
-  boot.position.set(0, -0.46, -0.06);
+  boot.position.set(0, -0.5, -0.06);
   shin.add(boot);
   hip.add(shin);
   legsGroup.add(hip);
@@ -2391,17 +2395,9 @@ function animate(): void {
     camera.rotateX(player.pitch * 0.5 - 0.1);
   }
 
-  // leg viewmodel fade: camera children sit at a FIXED angle below the axis,
-  // so the legs are only actually in-frame when looking down — fade them in
-  // over pitch -0.55..-1.0 instead of letting them float at the horizon.
-  // crouch and jump force them visible: the fold and the tuck ARE the moment.
-  {
-    const la = airborneNow || crouchT > 0.5 ? 1
-      : THREE.MathUtils.clamp((-player.pitch - 0.55) / 0.45, 0, 1);
-    legsGroup.visible = la > 0.02;
-    for (const m of legMats) m.opacity = la;
-    legAlpha = la;
-  }
+  // legs are a solid viewmodel (HL-style): always rendered, no pitch fade.
+  // legAlpha stays 1 for the state() diagnostic and the old test hooks.
+  { legsGroup.visible = true; legAlpha = 1; }
 
   updateTarget();
   updateArm(dt, t);

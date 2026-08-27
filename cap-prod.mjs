@@ -198,13 +198,13 @@ await new Promise(r => setTimeout(r, 700));
   ok('release crouch stands up (v0.7.1)', (await page.evaluate(() => window.__cap.state())).crouch < 0.1);
 }
 {
-  // leg viewmodel must fade with pitch: no legs at the horizon, legs when looking down
+  // legs are a solid HL-style viewmodel (v0.9.1): on at all times, no fade
   await page.evaluate(() => window.__cap.aim(window.__cap.state().yaw, 0));
   await new Promise(r => setTimeout(r, 300));
-  ok('legs hidden looking ahead (v0.7.1)', (await page.evaluate(() => window.__cap.state())).legs < 0.05);
+  ok('legs on at eye level (v0.9.1)', (await page.evaluate(() => window.__cap.state())).legs > 0.95);
   await page.evaluate(() => window.__cap.aim(window.__cap.state().yaw, -1.1));
   await new Promise(r => setTimeout(r, 300));
-  ok('legs visible looking down (v0.7.1)', (await page.evaluate(() => window.__cap.state())).legs > 0.9);
+  ok('legs on looking down (v0.9.1)', (await page.evaluate(() => window.__cap.state())).legs > 0.95);
 }
 
 {
